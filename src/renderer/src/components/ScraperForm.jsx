@@ -4,7 +4,6 @@ import './ScraperForm.css';
 const STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
 
 const emptyForm = {
-  productUrl: '',
   email: '',
   password: '',
   shipping: { firstName: '', lastName: '', address1: '', zip: '', city: '', state: '', phone: '' },
@@ -13,8 +12,9 @@ const emptyForm = {
   args: ['--no-sandbox', '--disable-setuid-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
 };
 
-function ScraperForm({ mode, profile, onSave, onStart, isRunning }) {
+function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, isRunning, productStatuses = {} }) {
   const [formData, setFormData] = useState(profile || emptyForm);
+  const [productUrls, setProductUrls] = useState([{ name: '', url: '' }]);
 
   useEffect(() => {
     if (profile) setFormData(profile);
@@ -30,12 +30,23 @@ function ScraperForm({ mode, profile, onSave, onStart, isRunning }) {
     }
   };
 
+  const handleProductChange = (index, field, value) => {
+    setProductUrls(prev => prev.map((p, i) => i === index ? { ...p, [field]: value } : p));
+  };
+
+  const addProductRow = () => setProductUrls(prev => [...prev, { name: '', url: '' }]);
+  const removeProductRow = (index) => setProductUrls(prev => prev.filter((_, i) => i !== index));
+
   const handleSubmit = (e) => {
     e.preventDefault();
     if (mode === 'profile') {
       onSave(formData);
     } else {
-      onStart({ ...profile, productUrl: formData.productUrl, headless: formData.headless, args: formData.args });
+      const validProducts = productUrls
+        .filter(p => p.url.trim())
+        .map(p => ({ url: p.url.trim(), name: p.name.trim() || p.url.trim() }));
+      if (validProducts.length === 0) return;
+      onStart(validProducts);
     }
   };
 
@@ -46,25 +57,57 @@ function ScraperForm({ mode, profile, onSave, onStart, isRunning }) {
         <p className="form-sub">
           {mode === 'profile'
             ? 'Stored locally for this session — used to auto-fill checkout.'
-            : 'Point the bot at a product and launch.'}
+            : 'Add one or more products. Each is monitored independently — checkout fires automatically the moment one comes in stock.'}
         </p>
       </div>
 
       <form onSubmit={handleSubmit} className="form-body">
         {mode === 'run' && (
           <div className="card-block">
-            <h3>Target</h3>
-            <div className="form-group">
-              <label>Product URL</label>
-              <input type="text" name="productUrl" value={formData.productUrl} onChange={handleChange} required placeholder="https://www.target.com/p/..." />
-            </div>
-            <label className="checkbox-label">
-              <input type="checkbox" name="headless" checked={formData.headless} onChange={handleChange} />
-              <span>Headless mode</span>
-            </label>
-            <small className="help-text">
-              {formData.headless ? 'Runs silently in the background.' : 'Browser window visible for debugging.'}
-            </small>
+            <h3>Products to Monitor</h3>
+           {productUrls.map((p, index) => {
+  const status = productStatuses[p.url]?.status;
+  const isBuying = status === 'buying';
+  return (
+    <div key={index} className="form-row" style={{ marginBottom: 10, alignItems: 'center' }}>
+      <div className="form-group" style={{ marginBottom: 0 }}>
+        <label>Name (optional)</label>
+        <input
+          type="text"
+          value={p.name}
+          onChange={(e) => handleProductChange(index, 'name', e.target.value)}
+          placeholder="Elite Trainer Box"
+        />
+      </div>
+      <div className="form-group" style={{ marginBottom: 0 }}>
+        <label>Product URL {status ? `— ${status}` : ''}</label>
+        <input
+          type="text"
+          value={p.url}
+          onChange={(e) => handleProductChange(index, 'url', e.target.value)}
+          placeholder="https://www.target.com/p/..."
+        />
+      </div>
+      {isBuying && (
+        <button
+          type="button"
+          className="clear-button"
+          onClick={() => onStopCheckout(p.url)}
+        >
+          🛑 Stop Checkout
+        </button>
+      )}
+      {productUrls.length > 1 && !isBuying && (
+        <button type="button" className="link-button" onClick={() => removeProductRow(index)}>
+          Remove
+        </button>
+      )}
+    </div>
+  );
+})}
+            <button type="button" className="link-button" onClick={addProductRow}>+ Add another product</button>
+
+           
             {!profile && <div className="warn-banner">⚠️ No profile saved — set up your details in Profile & Card first.</div>}
           </div>
         )}
@@ -154,9 +197,18 @@ function ScraperForm({ mode, profile, onSave, onStart, isRunning }) {
           </>
         )}
 
-        <button type="submit" className="submit-button" disabled={mode === 'run' && isRunning}>
-          {mode === 'profile' ? '💾 Save Profile' : (isRunning ? '⏳ Running...' : '🚀 Start Scraper')}
-        </button>
+        {mode === 'run' ? (
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button type="submit" className="submit-button" disabled={isRunning}>
+              {isRunning ? '⏳ Monitoring...' : '🚀 Start Monitoring'}
+            </button>
+            {isRunning && (
+              <button type="button" className="clear-button" onClick={onStop}>Stop All</button>
+            )}
+          </div>
+        ) : (
+          <button type="submit" className="submit-button">💾 Save Profile</button>
+        )}
       </form>
     </div>
   );

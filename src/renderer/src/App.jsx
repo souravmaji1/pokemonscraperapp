@@ -10,46 +10,79 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [profile, setProfile] = useState(null);
+  const [productStatuses, setProductStatuses] = useState({}); // url -> {status, price}
   const [runHistory, setRunHistory] = useState([]);
 
   useEffect(() => {
-    let cleanup;
+    let cleanupLog, cleanupStatus;
     if (window.electronAPI) {
-      cleanup = window.electronAPI.onLogMessage((logData) => {
+      cleanupLog = window.electronAPI.onLogMessage((logData) => {
         setLogs(prev => [...prev, logData]);
+      });
+      cleanupStatus = window.electronAPI.onProductStatus(({ url, status, price }) => {
+        setProductStatuses(prev => ({ ...prev, [url]: { status, price } }));
+        if (status === 'purchased' || status === 'checkout-failed') {
+          setRunHistory(prev => [{ startedAt: new Date().toISOString(), success: status === 'purchased', url }, ...prev]);
+        }
       });
     } else {
       console.warn('Electron API not available - running in browser mode');
     }
-    return () => { if (cleanup) cleanup(); };
+    return () => { if (cleanupLog) cleanupLog(); if (cleanupStatus) cleanupStatus(); };
   }, []);
 
-  const handleStartScraper = async (config) => {
-    setIsRunning(true);
-    setActiveView('logs');
-    const startedAt = new Date().toISOString();
+  const handleStartMonitoring = async (productUrls) => {
+  if (!profile) {
+    setLogs(prev => [...prev, {
+      timestamp: new Date().toISOString(),
+      message: '❌ No profile saved — set up Profile & Card before monitoring.',
+      type: 'error'
+    }]);
+    setActiveView('profile');
+    return;
+  }
 
-    try {
-      if (window.electronAPI) {
-        const result = await window.electronAPI.startScraper(config);
-        setRunHistory(prev => [{ startedAt, success: result.success, url: config.productUrl }, ...prev]);
-      } else {
-        setLogs(prev => [...prev, {
-          timestamp: new Date().toISOString(),
-          message: '⚠️ Running in browser mode - scraper functionality limited',
-          type: 'warning'
-        }]);
-      }
-    } catch (error) {
+  setActiveView('logs');
+
+  const initialStatuses = {};
+  productUrls.forEach(p => { initialStatuses[p.url] = { status: 'monitoring' }; });
+  setProductStatuses(prev => ({ ...prev, ...initialStatuses }));
+  setIsRunning(true); // stays true until stopped or all products resolve — see effect below
+
+  try {
+    if (window.electronAPI) {
+      await window.electronAPI.startMonitoring({
+        profile,
+        productUrls,
+        headless: profile?.headless ?? false,
+      });
+      // NOTE: intentionally NOT setting isRunning(false) here —
+      // this resolving just means "monitors were launched", not "work is done"
+    } else {
       setLogs(prev => [...prev, {
         timestamp: new Date().toISOString(),
-        message: `❌ Error: ${error.message}`,
-        type: 'error'
+        message: '⚠️ Running in browser mode - scraper functionality limited',
+        type: 'warning'
       }]);
-      setRunHistory(prev => [{ startedAt, success: false, url: config.productUrl }, ...prev]);
-    } finally {
       setIsRunning(false);
     }
+  } catch (error) {
+    setLogs(prev => [...prev, {
+      timestamp: new Date().toISOString(),
+      message: `❌ Error: ${error.message}`,
+      type: 'error'
+    }]);
+    setIsRunning(false);
+  }
+};
+
+  const handleStopCheckout = async (url) => {
+  if (window.electronAPI) await window.electronAPI.stopCheckout(url);
+};
+
+  const handleStopMonitoring = async () => {
+    if (window.electronAPI) await window.electronAPI.stopMonitoring();
+    setIsRunning(false);
   };
 
   const handleClearLogs = () => setLogs([]);
@@ -61,6 +94,7 @@ function App() {
           <Dashboard
             profile={profile}
             runHistory={runHistory}
+            productStatuses={productStatuses}
             isRunning={isRunning}
             logCount={logs.length}
             onNavigate={setActiveView}
@@ -70,12 +104,15 @@ function App() {
         return <ScraperForm mode="profile" profile={profile} onSave={setProfile} />;
       case 'run':
         return (
-          <ScraperForm
-            mode="run"
-            profile={profile}
-            onStart={handleStartScraper}
-            isRunning={isRunning}
-          />
+        <ScraperForm
+  mode="run"
+  profile={profile}
+  onStart={handleStartMonitoring}
+  onStop={handleStopMonitoring}
+  onStopCheckout={handleStopCheckout}
+  isRunning={isRunning}
+  productStatuses={productStatuses}
+/>
         );
       case 'logs':
         return <LogViewer logs={logs} onClear={handleClearLogs} isRunning={isRunning} />;
@@ -93,9 +130,7 @@ function App() {
         hasProfile={!!profile}
         electronConnected={!!window.electronAPI}
       />
-      <main className="main-panel">
-        {renderView()}
-      </main>
+      <main className="main-panel">{renderView()}</main>
     </div>
   );
 }

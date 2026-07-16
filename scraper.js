@@ -848,41 +848,43 @@ async function runCheckout(page, config) {
   }
 }
 
-async function runScraper(config) {
+
+
+async function runScraper(config, onBrowserReady) {
   let browser = null;
   let page = null;
 
   try {
     log("main", "Target checkout bot starting with puppeteer-real-browser.");
     log("main", `Product: ${config.productUrl}`);
-    
-    // Determine if we should use visible or headless mode
-    const headless = config.headless !== undefined ? config.headless : true;
-    
+
+    const headless = false;
     log("main", `Mode: ${headless ? 'Headless' : 'Visible'}`);
 
-    // Connect using puppeteer-real-browser
     const connectionResult = await connect({
-      headless: headless,
-      args: config.args || [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--start-maximized",
-        "--disable-blink-features=AutomationControlled",
-      ],
-      customConfig: {},
-      turnstile: true,
-      connectOption: {},
-      disableXvfb: false,
-      ignoreAllFlags: false,
+     headless: true,           // Real browser (headful)
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-infobars',              // Old flag for automation bar
+    '--disable-blink-features=AutomationControlled',
+    '--start-minimized',               // Try to start minimized
+     '--window-position=9999,9999',
+    '--window-size=800,600',           // Small window
+    '--suppress-message-center-popups',
+    '--disable-notifications',
+  ],
+  ignoreDefaultArgs: ['--enable-automation'],
     });
 
     browser = connectionResult.browser;
     page = connectionResult.page;
 
+    // Hand the browser back to the caller immediately so it can be force-closed on demand
+    if (onBrowserReady) onBrowserReady(browser);
+
     log("main", "Connected to real browser instance.");
 
-    // Set viewport if not maximized
     if (!headless) {
       await page.setViewport({ width: 1920, height: 1080 });
     }
@@ -895,7 +897,6 @@ async function runScraper(config) {
       log("main", "❌  Checkout did not complete. Check logs above.");
     }
 
-    // Keep browser open for inspection if not headless
     if (headless) {
       await browser.close();
       log("main", "Browser closed.");
@@ -906,13 +907,16 @@ async function runScraper(config) {
     return { success };
 
   } catch (err) {
-    log("main", `Fatal error: ${err.message}`, "error");
-    
+    // A forced browser.close() from the "stop" button also lands here as a connection error —
+    // report it distinctly so the UI doesn't show it as a normal failure.
+    const stopped = err.message && (err.message.includes('closed') || err.message.includes('detached') || err.message.includes('Protocol error'));
+    log("main", stopped ? "Checkout stopped by user." : `Fatal error: ${err.message}`, stopped ? "warning" : "error");
+
     if (browser && config.headless) {
       try { await browser.close(); } catch {}
     }
-    
-    return { success: false, error: err.message };
+
+    return { success: false, error: stopped ? 'Stopped by user' : err.message, stopped };
   }
 }
 

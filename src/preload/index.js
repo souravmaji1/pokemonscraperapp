@@ -1,12 +1,17 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  startScraper: (config) => ipcRenderer.invoke('start-scraper', config),
+  startMonitoring: (config) => ipcRenderer.invoke('start-monitoring', config),
+  stopMonitoring: () => ipcRenderer.invoke('stop-monitoring'),
+  stopCheckout: (url) => ipcRenderer.invoke('stop-checkout', url),
   onLogMessage: (callback) => {
     const handler = (event, data) => callback(data);
     ipcRenderer.on('scraper-log', handler);
     return () => ipcRenderer.removeListener('scraper-log', handler);
   },
-  // Add method to take screenshot of offscreen window (optional)
-  takeScreenshot: () => ipcRenderer.invoke('take-screenshot')
+  onProductStatus: (callback) => {
+    const handler = (event, data) => callback(data);
+    ipcRenderer.on('product-status', handler);
+    return () => ipcRenderer.removeListener('product-status', handler);
+  },
 });

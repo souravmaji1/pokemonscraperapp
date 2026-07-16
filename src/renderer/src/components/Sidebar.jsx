@@ -4,7 +4,7 @@ import './Sidebar.css';
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: '◈' },
   { id: 'profile', label: 'Profile & Card', icon: '◐' },
-  { id: 'run', label: 'Run Scraper', icon: '▶' },
+  { id: 'run', label: 'Quick Run', icon: '▶' },
   { id: 'logs', label: 'Logs', icon: '▤' },
 ];
 
