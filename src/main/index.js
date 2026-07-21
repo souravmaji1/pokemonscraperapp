@@ -4,9 +4,39 @@ const { join } = require('path');
 Menu.setApplicationMenu(null);
 
 let mainWindow;
-const activeMonitors = new Map(); // url -> { stop }
+const activeMonitors = new Map(); // url -> { stop, platform }
 const activeCheckouts = new Map(); // url -> puppeteer browser instance
 
+// Try to require the modules - they might be in different locations
+let monitorTargetProduct, monitorPokemonProduct, runTargetScraper, runPokemonScraper;
+
+try {
+  const targetMonitor = require('../../monitor-target');
+  monitorTargetProduct = targetMonitor.monitorTargetProduct;
+} catch (e) {
+  console.error('Failed to load monitor-target:', e.message);
+}
+
+try {
+  const pokemonMonitor = require('../../monitor-pokemon');
+  monitorPokemonProduct = pokemonMonitor.monitorPokemonProduct;
+} catch (e) {
+  console.error('Failed to load monitor-pokemon:', e.message);
+}
+
+try {
+  const targetScraper = require('../../scraper-target');
+  runTargetScraper = targetScraper.runScraper || targetScraper.runTargetScraper;
+} catch (e) {
+  console.error('Failed to load scraper-target:', e.message);
+}
+
+try {
+  const pokemonScraper = require('../../scraper-pokemon');
+  runPokemonScraper = pokemonScraper.runScraper || pokemonScraper.runPokemonScraper;
+} catch (e) {
+  console.error('Failed to load scraper-pokemon:', e.message);
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -18,7 +48,7 @@ function createWindow() {
       preload: join(__dirname, '../preload/index.js'),
     },
     icon: join(__dirname, '../../resources/icon.png'),
-    title: 'Target Scraper Bot',
+    title: 'Multi-Platform Scraper Bot',
     show: true,
   });
 
@@ -32,15 +62,6 @@ function createWindow() {
   mainWindow.webContents.on('crashed', () => console.error('Renderer process crashed'));
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
     console.error('Failed to load:', errorDescription);
-  });
-}
-
-function createOffscreenWindow() {
-  return new BrowserWindow({
-    width: 1920,
-    height: 1080,
-    show: false,
-    webPreferences: { offscreen: true, nodeIntegration: false, contextIsolation: true, webSecurity: true }
   });
 }
 
@@ -71,75 +92,156 @@ function sendProductStatus(data) {
 
 global.sendLogToRenderer = sendLogToRenderer;
 
+// Helper to merge platform profiles with common profile
+function getCheckoutConfig(commonProfile, platform, productUrl) {
+  const baseConfig = {
+    productUrl,
+    headless: commonProfile.headless,
+  };
 
-// config = { profile: {...}, productUrls: [{url, name}], headless }
+  if (platform === 'target') {
+    return {
+      ...baseConfig,
+      email: commonProfile.target?.email || commonProfile.email,
+      password: commonProfile.target?.password || commonProfile.password,
+      shipping: commonProfile.target?.shipping || commonProfile.shipping,
+      card: commonProfile.target?.card || commonProfile.card,
+    };
+  } else if (platform === 'pokemon') {
+    return {
+      ...baseConfig,
+      email: commonProfile.pokemon?.email || commonProfile.email,
+      password: commonProfile.pokemon?.password || commonProfile.password,
+      shipping: {
+        givenName: commonProfile.pokemon?.shipping?.givenName || commonProfile.shipping?.firstName,
+        familyName: commonProfile.pokemon?.shipping?.familyName || commonProfile.shipping?.lastName,
+        streetAddress: commonProfile.pokemon?.shipping?.streetAddress || commonProfile.shipping?.address1,
+        extendedAddress: commonProfile.pokemon?.shipping?.extendedAddress || '',
+        postalCode: commonProfile.pokemon?.shipping?.postalCode || commonProfile.shipping?.zip,
+        phoneNumber: commonProfile.pokemon?.shipping?.phoneNumber || commonProfile.shipping?.phone,
+      },
+      card: {
+        number: commonProfile.pokemon?.card?.number || commonProfile.card?.number,
+        cvv: commonProfile.pokemon?.card?.cvv || commonProfile.card?.cvv,
+        expMonth: commonProfile.pokemon?.card?.expMonth || commonProfile.card?.expMonth,
+        expYear: commonProfile.pokemon?.card?.expYear || commonProfile.card?.expYear,
+        nameOnCard: commonProfile.pokemon?.card?.nameOnCard || commonProfile.card?.nameOnCard,
+      },
+    };
+  }
+
+  return baseConfig;
+}
+
+// config = { profile: {...}, productUrls: [{url, name, platform}], headless }
 ipcMain.handle('start-monitoring', async (event, config) => {
-  const { monitorProduct } = require('../../monitor');
-  const { runScraper } = require('../../scraper');
-
   const started = [];
 
   for (const product of config.productUrls) {
     if (activeMonitors.has(product.url)) continue;
 
-    sendProductStatus({ url: product.url, status: 'monitoring' });
+    const platform = product.platform || 'target';
 
-    const handle = await monitorProduct(product.url, product.name, {
+    sendProductStatus({ url: product.url, status: 'monitoring', platform });
+
+    // Select the appropriate monitor and scraper functions based on platform
+    let monitorFn, scraperFn;
+    
+    if (platform === 'pokemon') {
+      monitorFn = monitorPokemonProduct;
+      scraperFn = runPokemonScraper;
+    } else {
+      monitorFn = monitorTargetProduct;
+      scraperFn = runTargetScraper;
+    }
+
+    // Check if the required functions are available
+    if (!monitorFn) {
+      sendLogToRenderer({
+        timestamp: new Date().toISOString(),
+        message: `[${product.name || product.url}] ❌ Monitor function not found for platform: ${platform}. Make sure monitor-${platform}.js exists.`,
+        type: 'error'
+      });
+      sendProductStatus({ url: product.url, status: 'error', platform });
+      continue;
+    }
+
+    if (!scraperFn) {
+      sendLogToRenderer({
+        timestamp: new Date().toISOString(),
+        message: `[${product.name || product.url}] ❌ Scraper function not found for platform: ${platform}. Make sure scraper-${platform}.js exists.`,
+        type: 'error'
+      });
+      sendProductStatus({ url: product.url, status: 'error', platform });
+      continue;
+    }
+
+    const handle = await monitorFn(product.url, product.name, {
       onLog: sendLogToRenderer,
       onInStock: async ({ url, name, price }) => {
         activeMonitors.delete(url);
-        sendProductStatus({ url, status: 'buying', price });
+        sendProductStatus({ url, status: 'buying', price, platform });
 
-          if (!config.profile) {
-    sendLogToRenderer({
-      timestamp: new Date().toISOString(),
-      message: `[${name}] ❌ No profile saved — can't checkout. Save your profile first.`,
-      type: 'error'
-    });
-    sendProductStatus({ url, status: 'checkout-failed' });
-    return;
-  }
+        // Check if profile exists for this platform
+        const hasPlatformProfile = platform === 'pokemon' 
+          ? !!(config.profile.pokemon || (config.profile.email && config.profile.password))
+          : !!(config.profile.target || (config.profile.email && config.profile.password));
+
+        if (!hasPlatformProfile) {
+          sendLogToRenderer({
+            timestamp: new Date().toISOString(),
+            message: `[${name}] ❌ No ${platform} profile saved — can't checkout. Save your ${platform} profile first.`,
+            type: 'error'
+          });
+          sendProductStatus({ url, status: 'checkout-failed', platform });
+          return;
+        }
 
         sendLogToRenderer({
           timestamp: new Date().toISOString(),
-          message: `[${name}] 🛒 In stock at ${price} — starting checkout...`,
+          message: `[${name}] 🛒 In stock at ${price} — starting ${platform} checkout...`,
           type: 'info'
         });
 
-        const checkoutConfig = {
-          ...config.profile,
-          productUrl: url,
-          headless: config.headless,
-          args: config.profile.args,
-        };
+        const checkoutConfig = getCheckoutConfig(config.profile, platform, url);
 
-        const result = await runScraper(checkoutConfig, (browser) => {
-    activeCheckouts.set(url, browser);
-  });
+        try {
+          const result = await scraperFn(checkoutConfig, (browser) => {
+            activeCheckouts.set(url, browser);
+          });
 
-  activeCheckouts.delete(url);
+          activeCheckouts.delete(url);
 
-          const status = result.success ? 'purchased' : (result.stopped ? 'stopped' : 'checkout-failed');
-  sendProductStatus({ url, status });
-        sendLogToRenderer({
-    timestamp: new Date().toISOString(),
-    message: result.success
-      ? `[${name}] ✅ Checkout completed!`
-      : `[${name}] ${result.stopped ? '🛑' : '❌'} ${result.stopped ? 'Checkout stopped by user.' : `Checkout did not complete: ${result.error || 'see logs above'}`}`,
-    type: result.success ? 'success' : (result.stopped ? 'warning' : 'error')
-  });
-
+          const status = result?.success ? 'purchased' : (result?.stopped ? 'stopped' : 'checkout-failed');
+          sendProductStatus({ url, status, platform });
+          sendLogToRenderer({
+            timestamp: new Date().toISOString(),
+            message: result?.success
+              ? `[${name}] ✅ ${platform} checkout completed!`
+              : `[${name}] ${result?.stopped ? '🛑' : '❌'} ${result?.stopped ? 'Checkout stopped by user.' : `Checkout did not complete: ${result?.error || 'see logs above'}`}`,
+            type: result?.success ? 'success' : (result?.stopped ? 'warning' : 'error')
+          });
+        } catch (error) {
+          sendLogToRenderer({
+            timestamp: new Date().toISOString(),
+            message: `[${name}] ❌ Checkout error: ${error.message}`,
+            type: 'error'
+          });
+          sendProductStatus({ url, status: 'checkout-failed', platform });
+        }
       }
     });
 
-    activeMonitors.set(product.url, handle);
-    started.push(product.url);
+    if (handle) {
+      activeMonitors.set(product.url, { handle, platform });
+      started.push(product.url);
+    }
   }
 
   return { success: true, monitoring: started };
 });
 
-// New IPC handler: stop a specific in-progress checkout
+// Stop a specific in-progress checkout
 ipcMain.handle('stop-checkout', async (event, url) => {
   const browser = activeCheckouts.get(url);
   if (browser) {
@@ -150,10 +252,10 @@ ipcMain.handle('stop-checkout', async (event, url) => {
   return { success: false, error: 'No active checkout for this URL' };
 });
 
-// Updated stop-monitoring: also stop any in-progress checkouts
+// Stop all monitoring and checkouts
 ipcMain.handle('stop-monitoring', async () => {
-  for (const [url, handle] of activeMonitors) {
-    handle.stop();
+  for (const [url, { handle }] of activeMonitors) {
+    try { handle.stop(); } catch (e) { console.error('Error stopping monitor:', e); }
     sendProductStatus({ url, status: 'stopped' });
   }
   activeMonitors.clear();

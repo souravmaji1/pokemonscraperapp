@@ -1,6 +1,8 @@
+// for targetplatform monitoring
+
 const { connect } = require('puppeteer-real-browser');
 
-async function monitorProduct(url, name, { onLog, onInStock, checkIntervalMin = 10000, checkIntervalMax = 19000 } = {}) {
+async function monitorTargetProduct(url, name, { onLog, onInStock, checkIntervalMin = 10000, checkIntervalMax = 19000 } = {}) {
   const log = (message, type = 'info') => {
     if (onLog) {
       onLog({ timestamp: new Date().toISOString(), message: `[${name}] ${message}`, type });
@@ -14,12 +16,12 @@ async function monitorProduct(url, name, { onLog, onInStock, checkIntervalMin = 
     log('Starting monitor browser...');
 
     const { browser: realBrowser, page } = await connect({
-      headless: true,           // Real browser (headful)
+      headless: false,           // Real browser (headful)
   args: [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-infobars',              // Old flag for automation bar
-    '--disable-blink-features=AutomationControlled',
+   '--disable-blink-features=AutomationControlled',
     '--start-minimized',               // Try to start minimized
     '--window-position=9999,9999',
     '--window-size=800,600',           // Small window
@@ -101,4 +103,4 @@ async function monitorProduct(url, name, { onLog, onInStock, checkIntervalMin = 
   }
 }
 
-module.exports = { monitorProduct };
+module.exports = { monitorTargetProduct };
