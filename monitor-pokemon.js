@@ -1,4 +1,43 @@
 const { connect } = require('puppeteer-real-browser');
+const { platform } = require('os');
+
+// Detect correct Chrome path based on OS
+function getChromeExecutablePath() {
+  if (platform() === 'darwin') {
+    const possiblePaths = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+    ];
+    
+    const fs = require('fs');
+    for (const path of possiblePaths) {
+      if (fs.existsSync(path)) {
+        return path;
+      }
+    }
+    
+    try {
+      const { execSync } = require('child_process');
+      const chromePath = execSync(
+        'mdfind "kMDItemCFBundleIdentifier == \'com.google.Chrome\'" | head -1 | xargs -I{} echo {}/Contents/MacOS/Google Chrome',
+        { encoding: 'utf8' }
+      ).trim();
+      if (chromePath && fs.existsSync(chromePath)) {
+        return chromePath;
+      }
+    } catch (e) {
+      // ignore
+    }
+    
+    console.warn('⚠️ Could not find Chrome on macOS. Install Google Chrome or set PUPPETEER_EXECUTABLE_PATH env variable.');
+    return undefined;
+  }
+  return undefined;
+}
 
 async function monitorPokemonProduct(url, name, { onLog, onInStock, checkIntervalMin = 15000, checkIntervalMax = 25000 } = {}) {
   const log = (message, type = 'info') => {
@@ -13,7 +52,8 @@ async function monitorPokemonProduct(url, name, { onLog, onInStock, checkInterva
   try {
     log('Starting Pokemon Center monitor browser...');
 
-    const { browser: realBrowser, page } = await connect({
+    const chromePath = getChromeExecutablePath();
+    const connectConfig = {
       headless: false,
       turnstile: true,
       fingerprint: true,
@@ -27,7 +67,14 @@ async function monitorPokemonProduct(url, name, { onLog, onInStock, checkInterva
         '--window-size=800,600',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
-    });
+    };
+
+    if (chromePath) {
+      connectConfig.customConfig = { executablePath: chromePath };
+      log(`Using Chrome at: ${chromePath}`);
+    }
+
+    const { browser: realBrowser, page } = await connect(connectConfig);
 
     browser = realBrowser;
     await page.setViewport({ width: 1366, height: 900 });
@@ -40,7 +87,6 @@ async function monitorPokemonProduct(url, name, { onLog, onInStock, checkInterva
         try {
           await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-          // Wait for add to cart button to render
           await page.waitForSelector('button[class*="add-to-cart-button"]', { 
             timeout: 15000 
           }).catch(() => null);
@@ -53,7 +99,6 @@ async function monitorPokemonProduct(url, name, { onLog, onInStock, checkInterva
             const text = btn.textContent.trim();
             const inStock = !isDisabled && /add to cart/i.test(text);
 
-            // Get price
             const priceEl = document.querySelector('[class*="product-price"], .price, [data-testid="price"]');
             const price = priceEl ? priceEl.textContent.trim() : 'N/A';
 

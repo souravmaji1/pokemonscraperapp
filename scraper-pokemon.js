@@ -1,4 +1,29 @@
 const { connect } = require('puppeteer-real-browser');
+const { platform } = require('os');
+
+function getChromeExecutablePath() {
+  if (platform() === 'darwin') {
+    const possiblePaths = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    ];
+    const fs = require('fs');
+    for (const path of possiblePaths) {
+      if (fs.existsSync(path)) return path;
+    }
+    try {
+      const { execSync } = require('child_process');
+      const chromePath = execSync(
+        'mdfind "kMDItemCFBundleIdentifier == \'com.google.Chrome\'" | head -1 | xargs -I{} echo {}/Contents/MacOS/Google Chrome',
+        { encoding: 'utf8' }
+      ).trim();
+      if (chromePath && fs.existsSync(chromePath)) return chromePath;
+    } catch (e) {}
+    return undefined;
+  }
+  return undefined;
+}
 
 function log(tag, message, type = 'info') {
   const timestamp = new Date().toISOString();
@@ -303,22 +328,29 @@ async function runPokemonScraper(config, onBrowserReady) {
     log("main", "Pokemon Center checkout bot starting...");
     log("main", `Product: ${config.productUrl}`);
 
-    const connectionResult = await connect({
-      headless: false,
-      turnstile: true,
-      fingerprint: true,
-      tf: true,
-      args: [
-        '--no-sandbox',
-        '--disable-blink-features=AutomationControlled',
-        '--start-minimized',
-        '--window-position=9999,9999',
-        '--window-size=800,600',
-        '--suppress-message-center-popups',
-        '--disable-notifications',
-      ],
-      ignoreDefaultArgs: ['--enable-automation'],
-    });
+  // In runPokemonScraper, replace connect() with:
+const chromePath = getChromeExecutablePath();
+const connectConfig = {
+  headless: false,
+  turnstile: true,
+  fingerprint: true,
+  tf: true,
+  args: [
+    '--no-sandbox',
+    '--disable-blink-features=AutomationControlled',
+    '--start-minimized',
+    '--window-position=9999,9999',
+    '--window-size=800,600',
+    '--suppress-message-center-popups',
+    '--disable-notifications',
+  ],
+  ignoreDefaultArgs: ['--enable-automation'],
+};
+if (chromePath) {
+  connectConfig.customConfig = { executablePath: chromePath };
+}
+
+const connectionResult = await connect(connectConfig);
 
     browser = connectionResult.browser;
     page = connectionResult.page;

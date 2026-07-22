@@ -1,10 +1,12 @@
 import React from 'react';
 import './Sidebar.css';
 
+// In Sidebar.js, add to NAV_ITEMS
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: '◈' },
   { id: 'profile', label: 'Profile & Card', icon: '◐' },
   { id: 'run', label: 'Quick Run', icon: '▶' },
+  { id: 'twitter', label: 'Twitter Monitor', icon: '🐦' },
   { id: 'logs', label: 'Logs', icon: '▤' },
 ];
 

@@ -1,6 +1,46 @@
-// for targetplatform monitoring
-
 const { connect } = require('puppeteer-real-browser');
+const { platform } = require('os');
+
+// Detect correct Chrome path based on OS
+function getChromeExecutablePath() {
+  if (platform() === 'darwin') {
+    // macOS: Try common Chrome/Chromium paths
+    const possiblePaths = [
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+    ];
+    
+    const fs = require('fs');
+    for (const path of possiblePaths) {
+      if (fs.existsSync(path)) {
+        return path;
+      }
+    }
+    
+    // Fallback: try to find via command
+    try {
+      const { execSync } = require('child_process');
+      const chromePath = execSync(
+        'mdfind "kMDItemCFBundleIdentifier == \'com.google.Chrome\'" | head -1 | xargs -I{} echo {}/Contents/MacOS/Google Chrome',
+        { encoding: 'utf8' }
+      ).trim();
+      if (chromePath && fs.existsSync(chromePath)) {
+        return chromePath;
+      }
+    } catch (e) {
+      // ignore
+    }
+    
+    console.warn('⚠️ Could not find Chrome on macOS. Install Google Chrome or set PUPPETEER_EXECUTABLE_PATH env variable.');
+    return undefined;
+  }
+  // Windows/Linux: let puppeteer-real-browser auto-detect
+  return undefined;
+}
 
 async function monitorTargetProduct(url, name, { onLog, onInStock, checkIntervalMin = 10000, checkIntervalMax = 19000 } = {}) {
   const log = (message, type = 'info') => {
@@ -15,21 +55,30 @@ async function monitorTargetProduct(url, name, { onLog, onInStock, checkInterval
   try {
     log('Starting monitor browser...');
 
-    const { browser: realBrowser, page } = await connect({
-      headless: false,           // Real browser (headful)
-  args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-infobars',              // Old flag for automation bar
-   '--disable-blink-features=AutomationControlled',
-    '--start-minimized',               // Try to start minimized
-    '--window-position=9999,9999',
-    '--window-size=800,600',           // Small window
-    '--suppress-message-center-popups',
-    '--disable-notifications',
-  ],
-  ignoreDefaultArgs: ['--enable-automation'],
-    });
+    const chromePath = getChromeExecutablePath();
+    const connectConfig = {
+      headless: false,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-infobars',
+        '--disable-blink-features=AutomationControlled',
+        '--start-minimized',
+        '--window-position=9999,9999',
+        '--window-size=800,600',
+        '--suppress-message-center-popups',
+        '--disable-notifications',
+      ],
+      ignoreDefaultArgs: ['--enable-automation'],
+    };
+
+    // On macOS, explicitly set the Chrome executable path
+    if (chromePath) {
+      connectConfig.customConfig = { executablePath: chromePath };
+      log(`Using Chrome at: ${chromePath}`);
+    }
+
+    const { browser: realBrowser, page } = await connect(connectConfig);
 
     browser = realBrowser;
     await page.setUserAgent(
