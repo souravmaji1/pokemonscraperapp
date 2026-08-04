@@ -6,6 +6,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   stopCheckout: (url) => ipcRenderer.invoke('stop-checkout', url),
   startTwitterMonitor: (config) => ipcRenderer.invoke('start-twitter-monitor', config),
   stopTwitterMonitor: () => ipcRenderer.invoke('stop-twitter-monitor'),
+    // Profile persistence
+  saveProfile: (profile) => ipcRenderer.invoke('save-profile', profile),
+  loadProfile: () => ipcRenderer.invoke('load-profile'),
+  deleteProfile: () => ipcRenderer.invoke('delete-profile'),
+  hasProfile: () => ipcRenderer.invoke('has-profile'),
+
+  
   onLogMessage: (callback) => {
     const handler = (event, data) => callback(data);
     ipcRenderer.on('scraper-log', handler);

@@ -39,7 +39,7 @@ function getChromeExecutablePath() {
   return undefined;
 }
 
-async function monitorPokemonProduct(url, name, { onLog, onInStock, checkIntervalMin = 15000, checkIntervalMax = 25000 } = {}) {
+async function monitorPokemonProduct(url, name, { onLog, onInStock, checkIntervalMin = 5000, checkIntervalMax = 5000 } = {}) {
   const log = (message, type = 'info') => {
     if (onLog) {
       onLog({ timestamp: new Date().toISOString(), message: `[Pokemon][${name}] ${message}`, type });
@@ -62,9 +62,9 @@ async function monitorPokemonProduct(url, name, { onLog, onInStock, checkInterva
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
-        '--start-minimized',
-        '--window-position=9999,9999',
-        '--window-size=800,600',
+      //  '--start-minimized',
+       // '--window-position=9999,9999',
+       // '--window-size=800,600',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     };

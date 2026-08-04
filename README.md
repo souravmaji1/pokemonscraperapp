@@ -25,6 +25,10 @@ https://www.target.com/p/pok-233-mon-trading-card-game-mega-evolution-pitch-blac
 https://www.target.com/p/pokemon-card-game-mega-high-class-pack-mega-dream-ex-pack-10-cards/-/A-1007918679
 s
 
+https://www.pokemoncenter.com/product/72-10917-101/unova-region-paired-pikachu-poke-plush-9-in
+
+t9474078@gmail.com
+
 const TARGET_EMAIL    = "t19939345@gmail.com";
 const TARGET_PASSWORD = "Nandamaji1@";
 

@@ -11,9 +11,61 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isTwitterRunning, setIsTwitterRunning] = useState(false);
-  const [profile, setProfile] = useState(null); // { target: {...}, pokemon: {...}, headless: bool }
+  const [profile, setProfile] = useState(null);
   const [productStatuses, setProductStatuses] = useState({});
   const [runHistory, setRunHistory] = useState([]);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
+
+  // Load profile on app start
+  useEffect(() => {
+    async function loadSavedProfile() {
+      try {
+        if (window.electronAPI) {
+          const result = await window.electronAPI.loadProfile();
+          if (result.success && result.profile) {
+            setProfile(result.profile);
+            setLogs(prev => [...prev, {
+              timestamp: new Date().toISOString(),
+              message: '✅ Profile loaded from saved data',
+              type: 'success'
+            }]);
+          } else {
+            setLogs(prev => [...prev, {
+              timestamp: new Date().toISOString(),
+              message: 'ℹ️ No saved profile found. Set up your profiles to get started.',
+              type: 'info'
+            }]);
+          }
+        } else {
+          // Fallback to localStorage for browser testing
+          const savedProfile = localStorage.getItem('scraper-profile');
+          if (savedProfile) {
+            try {
+              const parsed = JSON.parse(savedProfile);
+              setProfile(parsed);
+              setLogs(prev => [...prev, {
+                timestamp: new Date().toISOString(),
+                message: '✅ Profile loaded from local storage',
+                type: 'success'
+              }]);
+            } catch (e) {
+              console.error('Failed to parse saved profile:', e);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error loading profile:', error);
+        setLogs(prev => [...prev, {
+          timestamp: new Date().toISOString(),
+          message: `❌ Error loading profile: ${error.message}`,
+          type: 'error'
+        }]);
+      } finally {
+        setIsLoadingProfile(false);
+      }
+    }
+    loadSavedProfile();
+  }, []);
 
   useEffect(() => {
     let cleanupLog, cleanupStatus;
@@ -33,7 +85,7 @@ function App() {
             url,
             platform,
             source
-          }, ...prev]);
+          }, ...prev].slice(0, 50)); // Keep last 50 runs
         }
       });
     }
@@ -50,11 +102,72 @@ function App() {
     if (!hasActiveMonitors && isRunning) {
       setIsRunning(false);
     }
-    if (!hasActiveMonitors && isTwitterRunning) {
-      // Don't auto-stop Twitter flag unless explicitly stopped
-      // setIsTwitterRunning(false);
-    }
   }, [productStatuses, isRunning, isTwitterRunning]);
+
+  const handleSaveProfile = async (profileData) => {
+    setProfile(profileData);
+    
+    try {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.saveProfile(profileData);
+        if (result.success) {
+          setLogs(prev => [...prev, {
+            timestamp: new Date().toISOString(),
+            message: '✅ Profile saved and encrypted successfully!',
+            type: 'success'
+          }]);
+        } else {
+          throw new Error(result.error || 'Failed to save profile');
+        }
+      } else {
+        // Fallback to localStorage for browser testing
+        localStorage.setItem('scraper-profile', JSON.stringify(profileData));
+        setLogs(prev => [...prev, {
+          timestamp: new Date().toISOString(),
+          message: '✅ Profile saved to local storage',
+          type: 'success'
+        }]);
+      }
+    } catch (error) {
+      setLogs(prev => [...prev, {
+        timestamp: new Date().toISOString(),
+        message: `❌ Error saving profile: ${error.message}`,
+        type: 'error'
+      }]);
+    }
+  };
+
+  const handleDeleteProfile = async () => {
+    setProfile(null);
+    
+    try {
+      if (window.electronAPI) {
+        const result = await window.electronAPI.deleteProfile();
+        if (result.success) {
+          setLogs(prev => [...prev, {
+            timestamp: new Date().toISOString(),
+            message: '🗑️ All profiles deleted successfully',
+            type: 'info'
+          }]);
+        } else {
+          throw new Error(result.error || 'Failed to delete profile');
+        }
+      } else {
+        localStorage.removeItem('scraper-profile');
+        setLogs(prev => [...prev, {
+          timestamp: new Date().toISOString(),
+          message: '🗑️ Profile deleted from local storage',
+          type: 'info'
+        }]);
+      }
+    } catch (error) {
+      setLogs(prev => [...prev, {
+        timestamp: new Date().toISOString(),
+        message: `❌ Error deleting profile: ${error.message}`,
+        type: 'error'
+      }]);
+    }
+  };
 
   const handleStartMonitoring = async (productUrls, profileData) => {
     const hasTargetProfile = profileData?.target?.email;
@@ -218,12 +331,21 @@ function App() {
           />
         );
       case 'profile':
-        return <ScraperForm mode="profile" profile={profile} onSave={setProfile} />;
+        return (
+          <ScraperForm 
+            mode="profile" 
+            profile={profile} 
+            onSave={handleSaveProfile} 
+            onDelete={handleDeleteProfile}
+            isLoading={isLoadingProfile}
+          />
+        );
       case 'run':
         return (
           <ScraperForm
             mode="run"
             profile={profile}
+            onSave={handleSaveProfile}          // ← add this
             onStart={handleStartMonitoring}
             onStop={handleStopMonitoring}
             onStopCheckout={handleStopCheckout}
@@ -255,10 +377,7 @@ function App() {
   };
 
   return (
-    <div
-      className="app-shell"
-     
-    >
+    <div className="app-shell">
       <Sidebar
         activeView={activeView}
         onNavigate={setActiveView}

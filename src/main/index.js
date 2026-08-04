@@ -1,5 +1,11 @@
 const { app, BrowserWindow, ipcMain, Menu } = require('electron');
 const { join } = require('path');
+const Store = require('electron-store');
+
+const store = new Store({
+  encryptionKey: 'jsdhedikaslmaslkkagshgxdnxmxvchefddfd', // Change this to something unique
+  name: 'scraper-profiles'
+});
 
 const isMac = process.platform === 'darwin';
 
@@ -434,4 +440,62 @@ ipcMain.handle('get-status', async () => {
     monitoredUrls: Array.from(activeMonitors.keys()),
     twitterProfiles: activeTwitterMonitors.get('twitter-monitor')?.profileHandles || []
   };
+});
+
+// Save profile
+ipcMain.handle('save-profile', async (event, profileData) => {
+  try {
+    store.set('profile', profileData);
+    
+    // Also save current form state for quick reload
+    store.set('lastActive', new Date().toISOString());
+    
+    sendLogToRenderer({
+      timestamp: new Date().toISOString(),
+      message: '✅ Profile saved successfully',
+      type: 'success'
+    });
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error saving profile:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Load profile
+ipcMain.handle('load-profile', async () => {
+  try {
+    const profile = store.get('profile');
+    return { success: true, profile: profile || null };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Delete profile
+ipcMain.handle('delete-profile', async () => {
+  try {
+    store.delete('profile');
+    
+    sendLogToRenderer({
+      timestamp: new Date().toISOString(),
+      message: '🗑️ Profile deleted',
+      type: 'info'
+    });
+    
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Check if profile exists
+ipcMain.handle('has-profile', async () => {
+  try {
+    const hasProfile = store.has('profile');
+    return { success: true, hasProfile };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });

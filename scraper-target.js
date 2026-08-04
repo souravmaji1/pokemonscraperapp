@@ -47,42 +47,60 @@ function log(tag, message, type = 'info') {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-
 // ────────────────────────────────────────────────────────────────────────
-async function waitForLoadersToClear(page, tag = "loader-wait", timeoutMs = 20000, pollInterval = 400) {
+// FAST loader detection – tightened selectors + short timeouts
+// ────────────────────────────────────────────────────────────────────────
+function isDead(page) {
+  try {
+    return !page.browser().isConnected();
+  } catch {
+    return true;
+  }
+}
+
+async function waitForLoadersToClear(
+  page,
+  tag = "loader-wait",
+  timeoutMs = 7000,          // was 20000 – now aggressive
+  pollInterval = 220
+) {
   const start = Date.now();
   let everSawLoader = false;
 
   while (Date.now() - start < timeoutMs) {
+    if (isDead(page)) {
+      log(tag, "🛑 Browser closed — aborting wait.");
+      throw new Error("STOPPED_BY_USER");
+    }
+
     let loaderCount = 0;
     try {
       loaderCount = await page.evaluate(() => {
         const isVisible = (el) => {
           const rect = el.getBoundingClientRect();
-          if (rect.width === 0 || rect.height === 0) return false;
+          if (rect.width < 4 || rect.height < 4) return false;
           const style = window.getComputedStyle(el);
           if (style.display === "none" || style.visibility === "hidden") return false;
-          if (parseFloat(style.opacity) === 0) return false;
+          if (parseFloat(style.opacity) < 0.05) return false;
           return true;
         };
 
+        // ONLY real loading indicators – removed the overly broad ones
+        // that were matching permanent Target UI
         const selectors = [
-          '[class*="skeleton" i]',
+          '[class*="skeleton" i]:not([class*="skeleton-none"])',
           '[class*="Skeleton" i]',
           '[class*="shimmer" i]',
           '[class*="Shimmer" i]',
           '[class*="placeholder-loading" i]',
-          '[class*="spinner" i]',
-          '[class*="Spinner" i]',
-          '[class*="Loader" i]',
-          '[class*="loading-indicator" i]',
+          '[class*="loading-spinner" i]',
+          '[class*="Spinner" i][class*="loading" i]',
           '[data-test*="skeleton" i]',
-          '[data-test*="loading" i]',
+          '[data-test*="loading-indicator" i]',
           '[data-test*="spinner" i]',
-          '[data-test*="loader" i]',
-          '[aria-busy="true"]',
-          '[role="progressbar"]',
-          '[role="status"]',
+          '[aria-busy="true"][class*="load" i]',   // only when it also looks like a loader
+          '.styles_LoadingSpinner__',              // Target-style hashed classes sometimes appear
+          '[class*="styles_Skeleton"]',
         ];
 
         let count = 0;
@@ -96,57 +114,77 @@ async function waitForLoadersToClear(page, tag = "loader-wait", timeoutMs = 2000
           for (const el of nodes) {
             if (isVisible(el)) {
               count++;
-              break; // one visible match per selector pattern is enough signal
+              break; // one visible match per pattern is enough signal
             }
           }
         }
         return count;
       });
     } catch {
-      // Page is mid-navigation or context was destroyed — treat as "still loading"
+      if (isDead(page)) {
+        log(tag, "🛑 Browser closed — aborting wait.");
+        throw new Error("STOPPED_BY_USER");
+      }
+      // Page is mid-navigation – treat as "still loading" but don't burn the whole timeout
       loaderCount = 1;
     }
 
     if (loaderCount === 0) {
-      if (everSawLoader) log(tag, "✅  Loader(s) cleared, content ready.");
+      if (everSawLoader) {
+        log(tag, "✅ Loader(s) cleared.");
+      }
+      // Fast path: no loaders → return immediately
       return true;
     }
 
     everSawLoader = true;
-    log(tag, `Skeleton/loader still visible (${loaderCount} pattern match) — waiting ${pollInterval}ms...`);
+    // only log every ~1 s so the console isn't flooded
+    if ((Date.now() - start) % 1000 < pollInterval + 50) {
+      log(tag, `Loader still visible (${loaderCount}) – waiting…`);
+    }
     await sleep(pollInterval);
   }
 
-  log(tag, `⚠️  Timed out after ${timeoutMs}ms still seeing loader(s) — proceeding anyway.`);
+  log(tag, `⚠️ Timed out after ${timeoutMs}ms still seeing loader(s) — proceeding.`);
   return false;
 }
 
-async function waitForSelectorPolling(page, selector, timeoutMs = 15000, intervalMs = 500) {
+async function waitForSelectorPolling(page, selector, timeoutMs = 8000, intervalMs = 300) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    if (isDead(page)) throw new Error("STOPPED_BY_USER");
     try {
       const el = await page.$(selector);
       if (el) return el;
-    } catch {}
+    } catch {
+      if (isDead(page)) throw new Error("STOPPED_BY_USER");
+    }
     await sleep(intervalMs);
   }
   return null;
 }
 
-
 async function waitReadyThenSelector(
   page,
   selector,
-  { loaderTimeout = 20000, selectorTimeout = 15000, pollInterval = 500, tag = "wait-ready" } = {}
+  {
+    loaderTimeout = 6000,     // was 20000
+    selectorTimeout = 8000,   // was 15000
+    pollInterval = 300,
+    tag = "wait-ready",
+  } = {}
 ) {
-  await waitForLoadersToClear(page, tag, loaderTimeout, 400);
+  await waitForLoadersToClear(page, tag, loaderTimeout, 200);
   return waitForSelectorPolling(page, selector, selectorTimeout, pollInterval);
 }
+
+
+
 
 async function dismissInterstitials(page) {
   const tag = "interstitial";
   try {
-    await waitForLoadersToClear(page, tag, 8000);
+    await waitForLoadersToClear(page, tag, 5000);
 
     const skipped = await page.evaluate(() => {
       const candidates = document.querySelectorAll("button, a");
@@ -210,7 +248,7 @@ async function loginIfNeeded(page, email, password) {
   const tag = "login";
 
   // Wait for the login section's own skeletons before looking for the form
-  await waitForLoadersToClear(page, tag, 15000);
+  await waitForLoadersToClear(page, tag, 5000);
 
   const emailInput = await waitReadyThenSelector(
     page,
@@ -243,7 +281,7 @@ async function loginIfNeeded(page, email, password) {
     await continueBtn.click();
 
     log(tag, "Waiting for page to finish loading before looking for password screen...");
-    await waitForLoadersToClear(page, tag, 15000);
+    await waitForLoadersToClear(page, tag, 6000);
 
     log(tag, "Waiting for password screen...");
     let pwInput = await waitForSelectorPolling(
@@ -274,7 +312,7 @@ async function loginIfNeeded(page, email, password) {
       }
 
       log(tag, "Clicked method card, waiting for password input...");
-      await waitForLoadersToClear(page, tag, 12000);
+      await waitForLoadersToClear(page, tag, 6000);
       pwInput = await waitForSelectorPolling(
         page,
         'input[data-test="login-password"], input#password[type="password"], input[name="password"]',
@@ -340,7 +378,7 @@ async function loginIfNeeded(page, email, password) {
 
     // Give the auth spinner room to appear and clear before we start polling
     await sleep(1000);
-    await waitForLoadersToClear(page, tag, 20000);
+    await waitForLoadersToClear(page, tag, 6000);
 
     const loginStart = Date.now();
     while (Date.now() - loginStart < 30000) {
@@ -350,7 +388,7 @@ async function loginIfNeeded(page, email, password) {
         const currentUrl = page.url();
         if (!currentUrl.includes('/login') && !currentUrl.includes('/account')) {
           log(tag, `✅  Login successful! Now on: ${currentUrl}`);
-          await waitForLoadersToClear(page, tag, 15000);
+          await waitForLoadersToClear(page, tag, 6000);
           await dismissInterstitials(page);
           return true;
         }
@@ -364,7 +402,7 @@ async function loginIfNeeded(page, email, password) {
 
         if (!pwStillThere && !emailStillThere) {
           log(tag, `✅  Login successful! Now on: ${page.url()}`);
-          await waitForLoadersToClear(page, tag, 15000);
+          await waitForLoadersToClear(page, tag, 6000);
           await dismissInterstitials(page);
           return true;
         }
@@ -396,7 +434,7 @@ async function fillShippingAddress(page, shipping) {
   log(tag, "Handling shipping address step...");
 
   // Wait out any skeletons on the shipping/checkout section before reading it
-  await waitForLoadersToClear(page, tag, 20000);
+  await waitForLoadersToClear(page, tag, 6000);
 
   try {
     // Check if we're on the checkout page with address selection
@@ -426,7 +464,7 @@ async function fillShippingAddress(page, shipping) {
       if (saveBtn) {
         log(tag, "Clicking Save & continue for shipping...");
         await saveBtn.click();
-        await waitForLoadersToClear(page, tag, 15000);
+        await waitForLoadersToClear(page, tag, 6000);
         await sleep(2000);
         log(tag, `After shipping save URL: ${page.url()}`);
 
@@ -447,8 +485,8 @@ async function fillShippingAddress(page, shipping) {
 
     // If we need to fill the form manually
     log(tag, "Filling shipping address form manually...");
-    await waitForLoadersToClear(page, tag, 15000);
-    await page.waitForSelector('#first_name', { timeout: 10000 });
+    await waitForLoadersToClear(page, tag, 6000);
+    await page.waitForSelector('#first_name', { timeout: 5000 });
     await sleep(1000);
 
     const fnEl = await page.$('#first_name');
@@ -484,7 +522,7 @@ async function fillShippingAddress(page, shipping) {
     if (saveBtn) {
       log(tag, "Clicking Save & continue...");
       await saveBtn.click();
-      await waitForLoadersToClear(page, tag, 15000);
+      await waitForLoadersToClear(page, tag, 6000);
       await sleep(1500);
       log(tag, `After save URL: ${page.url()}`);
     }
@@ -500,7 +538,7 @@ async function fillShippingAddress(page, shipping) {
 async function handleVerifyAddressModal(page) {
   const tag = "verify-address";
   log(tag, "Checking for verify address modal...");
-  await waitForLoadersToClear(page, tag, 10000);
+  await waitForLoadersToClear(page, tag, 5000);
   await sleep(1000);
 
   const useUnverifiedBtn = await waitForSelectorPolling(
@@ -512,7 +550,7 @@ async function handleVerifyAddressModal(page) {
   if (useUnverifiedBtn) {
     log(tag, "Detected verify address modal. Clicking 'Use unverified address'...");
     await useUnverifiedBtn.click();
-    await waitForLoadersToClear(page, tag, 10000);
+    await waitForLoadersToClear(page, tag, 5000);
     await sleep(1500);
   } else {
     log(tag, "No verify address modal — address accepted.");
@@ -523,7 +561,7 @@ async function handlePaymentAndPlaceOrder(page, card) {
   const tag = "payment-order";
   log(tag, "Handling payment and order placement...");
 
-  await waitForLoadersToClear(page, tag, 20000);
+  await waitForLoadersToClear(page, tag, 8000);
   await sleep(1500);
 
   // Check if we're already on the final review page with saved payment
@@ -535,13 +573,13 @@ async function handlePaymentAndPlaceOrder(page, card) {
     const placeOrderBtn = await waitReadyThenSelector(
       page,
       '[data-test="placeOrderButton"]:not([disabled])',
-      { selectorTimeout: 15000, tag }
+      { selectorTimeout: 7000, tag }
     );
 
     if (placeOrderBtn) {
       log(tag, "✅  Place Order button is enabled! Clicking...");
       await placeOrderBtn.click();
-      await waitForLoadersToClear(page, tag, 15000);
+      await waitForLoadersToClear(page, tag, 6000);
       await sleep(2000);
       log(tag, `After place order URL: ${page.url()}`);
 
@@ -568,13 +606,13 @@ async function handlePaymentAndPlaceOrder(page, card) {
     const paymentSaveBtn = await waitReadyThenSelector(
       page,
       '[data-test="save_and_continue_button_step_PAYMENT"]',
-      { selectorTimeout: 12000, tag }
+      { selectorTimeout: 6000, tag }
     );
 
     if (paymentSaveBtn) {
       log(tag, "Clicking payment Save and continue...");
       await paymentSaveBtn.click();
-      await waitForLoadersToClear(page, tag, 15000);
+      await waitForLoadersToClear(page, tag, 7000);
       await sleep(2000);
       log(tag, `After payment save URL: ${page.url()}`);
 
@@ -587,7 +625,7 @@ async function handlePaymentAndPlaceOrder(page, card) {
       if (placeOrderBtn) {
         log(tag, "✅  Clicking Place your order...");
         await placeOrderBtn.click();
-        await waitForLoadersToClear(page, tag, 15000);
+        await waitForLoadersToClear(page, tag, 6000);
         await sleep(2000);
         log(tag, `After place order URL: ${page.url()}`);
 
@@ -606,13 +644,13 @@ async function handlePaymentAndPlaceOrder(page, card) {
   const addPaymentBtn = await waitReadyThenSelector(
     page,
     '[data-test="add-new-payment-card-button"], [data-test="add-payment-credit-debit-radio"]',
-    { selectorTimeout: 10000, tag }
+    { selectorTimeout: 6000, tag }
   );
 
   if (addPaymentBtn) {
     log(tag, "Clicking add payment method...");
     await addPaymentBtn.click();
-    await waitForLoadersToClear(page, tag, 10000);
+    await waitForLoadersToClear(page, tag, 5000);
     await sleep(1500);
   }
 
@@ -629,7 +667,7 @@ async function handlePaymentAndPlaceOrder(page, card) {
     if (placeOrderBtn) {
       log(tag, "✅  Place Order button found despite no card input!");
       await placeOrderBtn.click();
-      await waitForLoadersToClear(page, tag, 15000);
+      await waitForLoadersToClear(page, tag, 5000);
       await sleep(2000);
       await handleCVVModal(page, card);
       return true;
@@ -642,13 +680,13 @@ async function handlePaymentAndPlaceOrder(page, card) {
   const paymentSaveBtn = await waitReadyThenSelector(
     page,
     '[data-test="save_and_continue_button_step_PAYMENT"]',
-    { selectorTimeout: 12000, tag }
+    { selectorTimeout: 6000, tag }
   );
 
   if (paymentSaveBtn) {
     log(tag, "Clicking payment Save and continue...");
     await paymentSaveBtn.click();
-    await waitForLoadersToClear(page, tag, 15000);
+    await waitForLoadersToClear(page, tag, 5000);
     await sleep(2000);
     log(tag, `After payment save URL: ${page.url()}`);
 
@@ -661,7 +699,7 @@ async function handlePaymentAndPlaceOrder(page, card) {
     if (placeOrderBtn) {
       log(tag, "✅  Clicking Place your order...");
       await placeOrderBtn.click();
-      await waitForLoadersToClear(page, tag, 15000);
+      await waitForLoadersToClear(page, tag, 5000);
       await sleep(2000);
       log(tag, `After place order URL: ${page.url()}`);
 
@@ -677,7 +715,7 @@ async function handlePaymentAndPlaceOrder(page, card) {
 async function fillCardInIframeOrDirect(page, card) {
   const tag = "card-fill";
 
-  await waitForLoadersToClear(page, tag, 12000);
+  await waitForLoadersToClear(page, tag, 6000);
 
   const directCardInput = await page.$(
     'input[name="cardNumber"], input[id*="card-number"], input[data-test*="card-number"], input[autocomplete="cc-number"]'
@@ -742,13 +780,13 @@ async function handleCVVModal(page, card) {
   const tag = "cvv-modal";
   log(tag, "Checking for CVV confirmation modal...");
 
-  await waitForLoadersToClear(page, tag, 15000);
+  await waitForLoadersToClear(page, tag, 5000);
   await sleep(1500);
 
   const cvvInput = await waitForSelectorPolling(
     page,
     '#enter-cvv',
-    15000
+    5000
   );
 
   if (cvvInput) {
@@ -762,7 +800,7 @@ async function handleCVVModal(page, card) {
     if (confirmBtn) {
       log(tag, "Clicking Confirm button...");
       await confirmBtn.click();
-      await waitForLoadersToClear(page, tag, 15000);
+      await waitForLoadersToClear(page, tag, 5000);
       await sleep(2000);
       log(tag, `After CVV confirmation URL: ${page.url()}`);
       return true;
@@ -788,7 +826,7 @@ async function runCheckout(page, config) {
     });
 
     log(tag, "Waiting for product page skeleton/loaders to clear...");
-    await waitForLoadersToClear(page, tag, 20000);
+    await waitForLoadersToClear(page, tag, 8000);
     await sleep(1500);
 
     // ── STEP 2: Handle variant/option selection if present ───────────────
@@ -803,7 +841,7 @@ async function runCheckout(page, config) {
 
     // ── STEP 3: Add to Cart ──────────────────────────────────────────────
     log(tag, "Waiting for Add to Cart button to appear and be enabled...");
-    await waitForLoadersToClear(page, tag, 20000);
+    await waitForLoadersToClear(page, tag, 7000);
 
     const addToCartSelectors = [
       '[data-test="addToCartButton"]',
@@ -815,7 +853,7 @@ async function runCheckout(page, config) {
     let addToCartBtn = null;
     const btnWaitStart = Date.now();
 
-    while (Date.now() - btnWaitStart < 30000) {
+    while (Date.now() - btnWaitStart < 8000) {
       for (const sel of addToCartSelectors) {
         try {
           const btn = await page.$(sel);
@@ -858,7 +896,7 @@ async function runCheckout(page, config) {
     }
 
     log(tag, `After add-to-cart URL: ${page.url()}`);
-    await waitForLoadersToClear(page, tag, 15000);
+    await waitForLoadersToClear(page, tag, 5000);
     await sleep(1500);
 
     // ── STEP 4: Navigate to cart ─────────────────────────────────────────
@@ -898,7 +936,7 @@ async function runCheckout(page, config) {
       await sleep(1500);
     }
 
-    await waitForLoadersToClear(page, tag, 15000);
+    await waitForLoadersToClear(page, tag, 5000);
 
     // ── STEP 5: Click checkout button ────────────────────────────────────
     log(tag, "Looking for checkout button on cart page...");
@@ -907,7 +945,7 @@ async function runCheckout(page, config) {
     const checkoutBtn = await waitReadyThenSelector(
       page,
       '[data-test="checkout-button"], button:has-text("Check out"), a:has-text("Check out")',
-      { selectorTimeout: 15000, tag }
+      { selectorTimeout: 5000, tag }
     );
 
     if (checkoutBtn) {
@@ -930,7 +968,7 @@ async function runCheckout(page, config) {
 
     // Checkout pages tend to have the longest skeleton states — give this
     // one the most patience.
-    await waitForLoadersToClear(page, tag, 25000);
+    await waitForLoadersToClear(page, tag, 8000);
 
     // ── STEP 6: Handle login ─────────────────────────────────────────────
     const loginSuccess = await loginIfNeeded(page, config.email, config.password);
@@ -938,13 +976,13 @@ async function runCheckout(page, config) {
       log(tag, "⚠️  Login may have failed, but continuing to check page state...");
     }
 
-    await waitForLoadersToClear(page, tag, 15000);
+    await waitForLoadersToClear(page, tag, 5000);
     await sleep(1500);
     await dismissInterstitials(page);
     await dismissTargetCircleModal(page);
 
     // ── STEP 7: Handle post-login navigation ─────────────────────────────
-    await waitForLoadersToClear(page, tag, 15000);
+    await waitForLoadersToClear(page, tag, 5000);
     await sleep(1500);
     let currentUrl = page.url();
     log(tag, `Current URL after login: ${currentUrl}`);
@@ -968,7 +1006,7 @@ async function runCheckout(page, config) {
       }
     }
 
-    await waitForLoadersToClear(page, tag, 20000);
+    await waitForLoadersToClear(page, tag, 8000);
     await sleep(1500);
 
     // ── STEP 8: Handle shipping address ──────────────────────────────────
@@ -978,7 +1016,7 @@ async function runCheckout(page, config) {
       return false;
     }
 
-    await waitForLoadersToClear(page, tag, 15000);
+    await waitForLoadersToClear(page, tag, 5000);
     await sleep(1000);
 
     // ── STEP 9: Handle payment and place order ───────────────────────────

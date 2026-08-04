@@ -42,7 +42,7 @@ function getChromeExecutablePath() {
   return undefined;
 }
 
-async function monitorTargetProduct(url, name, { onLog, onInStock, checkIntervalMin = 10000, checkIntervalMax = 19000 } = {}) {
+async function monitorTargetProduct(url, name, { onLog, onInStock, checkIntervalMin = 4000, checkIntervalMax = 4000 } = {}) {
   const log = (message, type = 'info') => {
     if (onLog) {
       onLog({ timestamp: new Date().toISOString(), message: `[${name}] ${message}`, type });
@@ -64,8 +64,8 @@ async function monitorTargetProduct(url, name, { onLog, onInStock, checkInterval
         '--disable-infobars',
         '--disable-blink-features=AutomationControlled',
         '--start-minimized',
-        '--window-position=9999,9999',
-        '--window-size=800,600',
+     //   '--window-position=9999,9999',
+     //   '--window-size=800,600',
         '--suppress-message-center-popups',
         '--disable-notifications',
       ],
@@ -92,13 +92,13 @@ async function monitorTargetProduct(url, name, { onLog, onInStock, checkInterval
       while (!stopped) {
         checkCount++;
         try {
-          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 8000 });
 
           await page.waitForFunction(() => {
             const loadingText = document.body.innerText.includes('Still loading...') ||
               document.querySelector('.styles_ndsSpinner__agM2w');
             return !loadingText;
-          }, { timeout: 20000 }).catch(() => log('Loader timeout, checking anyway...'));
+          }, { timeout: 7000 }).catch(() => log('Loader timeout, checking anyway...'));
 
           await page.evaluate(() => new Promise(r => setTimeout(r, 2500)));
 
