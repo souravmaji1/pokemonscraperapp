@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteProfile: () => ipcRenderer.invoke('delete-profile'),
   hasProfile: () => ipcRenderer.invoke('has-profile'),
 
+   // Product persistence
+  saveProducts: (products) => ipcRenderer.invoke('save-products', products),
+  loadProducts: () => ipcRenderer.invoke('load-products'),
+  clearProducts: () => ipcRenderer.invoke('clear-products'),
+
   
   onLogMessage: (callback) => {
     const handler = (event, data) => callback(data);

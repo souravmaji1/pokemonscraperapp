@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './ScraperForm.css';
 
 const STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
@@ -31,6 +31,34 @@ function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, i
   const [pokemonProfile, setPokemonProfile] = useState(profile?.pokemon || emptyPokemonProfile);
   const [headless, setHeadless] = useState(profile?.headless || false);
   const [productUrls, setProductUrls] = useState([{ name: '', url: '', platform: 'target' }]);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
+  const [saveMessage, setSaveMessage] = useState('');
+  const isInitialLoad = useRef(true);
+  const saveTimeoutRef = useRef(null);
+
+  // Load saved products on mount
+  useEffect(() => {
+    async function loadSavedProducts() {
+      try {
+        if (window.electronAPI && mode === 'run') {
+          const result = await window.electronAPI.loadProducts();
+          if (result.success && result.products && result.products.length > 0) {
+            setProductUrls(result.products);
+            console.log('✅ Loaded saved products:', result.products.length);
+          }
+        }
+      } catch (error) {
+        console.error('Error loading saved products:', error);
+      } finally {
+        setIsLoadingProducts(false);
+        // Reset the initial load flag after a short delay
+        setTimeout(() => {
+          isInitialLoad.current = false;
+        }, 500);
+      }
+    }
+    loadSavedProducts();
+  }, [mode]);
 
   useEffect(() => {
     if (profile) {
@@ -39,6 +67,44 @@ function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, i
       if (profile.headless !== undefined) setHeadless(profile.headless);
     }
   }, [profile]);
+
+  // Auto-save products whenever they change
+  useEffect(() => {
+    // Don't save during initial load
+    if (mode === 'run' && !isLoadingProducts && !isInitialLoad.current && window.electronAPI) {
+      // Clear previous timeout
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+
+      // Debounce the save operation
+      saveTimeoutRef.current = setTimeout(async () => {
+        const validProducts = productUrls.filter(p => p.url.trim() || p.name.trim());
+        if (validProducts.length > 0) {
+          try {
+            await window.electronAPI.saveProducts(validProducts);
+            setSaveMessage('Products saved ✓');
+            setTimeout(() => setSaveMessage(''), 2000);
+          } catch (error) {
+            console.error('Error saving products:', error);
+          }
+        } else {
+          // Clear storage if no valid products
+          try {
+            await window.electronAPI.clearProducts();
+          } catch (error) {
+            console.error('Error clearing products:', error);
+          }
+        }
+      }, 1000); // Debounce for 1 second
+    }
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [productUrls, mode, isLoadingProducts]);
 
   const handleTargetChange = (e) => {
     const { name, value } = e.target;
@@ -65,7 +131,30 @@ function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, i
   };
 
   const addProductRow = () => setProductUrls(prev => [...prev, { name: '', url: '', platform: 'target' }]);
-  const removeProductRow = (index) => setProductUrls(prev => prev.filter((_, i) => i !== index));
+
+  const removeProductRow = (index) => {
+    setProductUrls(prev => {
+      const updated = prev.filter((_, i) => i !== index);
+      // If removing the last row, replace with empty row
+      if (updated.length === 0) {
+        return [{ name: '', url: '', platform: 'target' }];
+      }
+      return updated;
+    });
+  };
+
+  const handleClearAllProducts = async () => {
+    setProductUrls([{ name: '', url: '', platform: 'target' }]);
+    if (window.electronAPI) {
+      try {
+        await window.electronAPI.clearProducts();
+        setSaveMessage('All products cleared ✓');
+        setTimeout(() => setSaveMessage(''), 2000);
+      } catch (error) {
+        console.error('Error clearing products:', error);
+      }
+    }
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -113,6 +202,29 @@ function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, i
     });
   };
 
+  const copyFromPokemon = () => {
+    setTargetProfile({
+      email: pokemonProfile.email,
+      password: pokemonProfile.password,
+      shipping: {
+        firstName: pokemonProfile.shipping.givenName,
+        lastName: pokemonProfile.shipping.familyName,
+        address1: pokemonProfile.shipping.streetAddress,
+        zip: pokemonProfile.shipping.postalCode,
+        city: '',
+        state: '',
+        phone: pokemonProfile.shipping.phoneNumber,
+      },
+      card: {
+        number: pokemonProfile.card.number,
+        cvv: pokemonProfile.card.cvv,
+        expMonth: pokemonProfile.card.expMonth,
+        expYear: pokemonProfile.card.expYear,
+        nameOnCard: pokemonProfile.card.nameOnCard,
+      },
+    });
+  };
+
   return (
     <div className="scraper-form">
       <div className="form-header">
@@ -122,79 +234,211 @@ function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, i
             ? 'Configure platform-specific profiles. Pokemon Center has different field names than Target.'
             : 'Add one or more products. Each is monitored independently — checkout fires automatically the moment one comes in stock.'}
         </p>
+        {mode === 'run' && saveMessage && (
+          <div style={{
+            marginTop: 8,
+            padding: '4px 12px',
+            background: '#ecfdf5',
+            color: '#065f46',
+            borderRadius: 6,
+            fontSize: 13,
+            display: 'inline-block',
+          }}>
+            {saveMessage}
+          </div>
+        )}
       </div>
 
       <form onSubmit={handleSubmit} className="form-body">
         {mode === 'run' && (
           <div className="card-block">
-            <h3>Products to Monitor</h3>
-           {productUrls.map((p, index) => {
-  const status = productStatuses[p.url]?.status;
-  const platform = productStatuses[p.url]?.platform || p.platform;
-  const isBuying = status === 'buying';
-  return (
-    <div key={index} className="form-row" style={{ marginBottom: 10, alignItems: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
-      <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
-        <label>Platform</label>
-        <select
-          value={p.platform}
-          onChange={(e) => handleProductChange(index, 'platform', e.target.value)}
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid #d1d5db', width: '100%' }}
-        >
-          {PLATFORMS.map(plat => (
-            <option key={plat.value} value={plat.value}>{plat.label}</option>
-          ))}
-        </select>
-      </div>
-      <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 150 }}>
-        <label>Name (optional)</label>
-        <input
-          type="text"
-          value={p.name}
-          onChange={(e) => handleProductChange(index, 'name', e.target.value)}
-          placeholder="Elite Trainer Box"
-        />
-      </div>
-      <div className="form-group" style={{ marginBottom: 0, flex: 2, minWidth: 250 }}>
-        <label>Product URL {status ? `— ${status} [${platform}]` : ''}</label>
-        <input
-          type="text"
-          value={p.url}
-          onChange={(e) => handleProductChange(index, 'url', e.target.value)}
-          placeholder={p.platform === 'pokemon' ? 'https://www.pokemoncenter.com/product/...' : 'https://www.target.com/p/...'}
-        />
-      </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
-        {isBuying && (
-          <button
-            type="button"
-            className="clear-button"
-            onClick={() => onStopCheckout(p.url)}
-            style={{ whiteSpace: 'nowrap' }}
-          >
-            🛑 Stop Checkout
-          </button>
-        )}
-        {productUrls.length > 1 && !isBuying && (
-          <button type="button" className="link-button" onClick={() => removeProductRow(index)}>
-            ✕
-          </button>
-        )}
-      </div>
-    </div>
-  );
-})}
-            <button type="button" className="link-button" onClick={addProductRow}>+ Add another product</button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+              <h3 style={{ margin: 0 }}>
+                Products to Monitor
+                {!isLoadingProducts && productUrls.filter(p => p.url.trim()).length > 0 && (
+                  <span style={{ fontSize: 14, color: '#6b7280', marginLeft: 8, fontWeight: 400 }}>
+                    ({productUrls.filter(p => p.url.trim()).length} product{productUrls.filter(p => p.url.trim()).length !== 1 ? 's' : ''})
+                  </span>
+                )}
+              </h3>
+              {productUrls.filter(p => p.url.trim() || p.name.trim()).length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearAllProducts}
+                  style={{
+                    padding: '6px 12px',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: 6,
+                    background: '#f9fafb',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    color: '#6b7280',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                  title="Clear all saved products"
+                >
+                  🗑️ Clear All
+                </button>
+              )}
+            </div>
 
-            {(!targetProfile.email && !pokemonProfile.email) && (
-              <div className="warn-banner">
-                ⚠️ No profile saved for any platform — set up your details in Profile & Card first.
+            {isLoadingProducts ? (
+              <div style={{ padding: '20px', textAlign: 'center', color: '#9ca3af' }}>
+                Loading saved products...
               </div>
-            )}
-            {targetProfile.email && !pokemonProfile.email && (
-              <div className="warn-banner" style={{ background: '#fff3cd', border: '1px solid #ffc107' }}>
-                ⚡ Pokémon Center profile not configured. Click <strong>"Copy from Target"</strong> in the profile tab to quickly set it up.
-              </div>
+            ) : (
+              <>
+                {productUrls.map((p, index) => {
+                  const status = productStatuses[p.url]?.status;
+                  const platform = productStatuses[p.url]?.platform || p.platform;
+                  const isBuying = status === 'buying';
+                  const isMonitoring = status === 'monitoring';
+                  
+                  return (
+                    <div 
+                      key={index} 
+                      className="form-row" 
+                      style={{ 
+                        marginBottom: 10, 
+                        alignItems: 'flex-end', 
+                        flexWrap: 'wrap', 
+                        gap: 8,
+                        padding: '12px',
+                        background: isMonitoring ? '#f0f9ff' : isBuying ? '#fef3c7' : 'transparent',
+                        borderRadius: 8,
+                        border: isMonitoring ? '1px solid #bae6fd' : isBuying ? '1px solid #fde68a' : '1px solid transparent',
+                        transition: 'all 0.2s',
+                      }}
+                    >
+                      <div className="form-group" style={{ marginBottom: 0, minWidth: 140 }}>
+                        <label>Platform</label>
+                        <select
+                          value={p.platform}
+                          onChange={(e) => handleProductChange(index, 'platform', e.target.value)}
+                          style={{ 
+                            padding: '8px 12px', 
+                            borderRadius: 6, 
+                            border: '1px solid #d1d5db', 
+                            width: '100%',
+                            
+                          }}
+                          disabled={isMonitoring || isBuying}
+                        >
+                          {PLATFORMS.map(plat => (
+                            <option key={plat.value} value={plat.value}>{plat.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      
+                      <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 150 }}>
+                        <label>Name (optional)</label>
+                        <input
+                          type="text"
+                          value={p.name}
+                          onChange={(e) => handleProductChange(index, 'name', e.target.value)}
+                          placeholder="Elite Trainer Box"
+                          disabled={isMonitoring || isBuying}
+                        />
+                      </div>
+                      
+                      <div className="form-group" style={{ marginBottom: 0, flex: 2, minWidth: 250 }}>
+                        <label>
+                          Product URL 
+                          {status && (
+                            <span style={{ 
+                              marginLeft: 8, 
+                              fontSize: 12,
+                              padding: '2px 6px',
+                              borderRadius: 4,
+                              background: isMonitoring ? '#dbeafe' : isBuying ? '#fef3c7' : '#f3f4f6',
+                              color: isMonitoring ? '#1e40af' : isBuying ? '#92400e' : '#6b7280',
+                            }}>
+                              {status} [{platform}]
+                            </span>
+                          )}
+                        </label>
+                        <input
+                          type="text"
+                          value={p.url}
+                          onChange={(e) => handleProductChange(index, 'url', e.target.value)}
+                          placeholder={p.platform === 'pokemon' ? 'https://www.pokemoncenter.com/product/...' : 'https://www.target.com/p/...'}
+                          disabled={isMonitoring || isBuying}
+                        />
+                      </div>
+                      
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                        {isBuying && (
+                          <button
+                            type="button"
+                            className="clear-button"
+                            onClick={() => onStopCheckout(p.url)}
+                            style={{ 
+                              whiteSpace: 'nowrap',
+                              background: '#fee2e2',
+                              color: '#dc2626',
+                              border: '1px solid #fecaca',
+                            }}
+                          >
+                            🛑 Stop Checkout
+                          </button>
+                        )}
+                        {!isMonitoring && !isBuying && (
+                          <button 
+                            type="button" 
+                            className="link-button" 
+                            onClick={() => removeProductRow(index)}
+                            title="Remove product"
+                            style={{
+                              padding: '4px 8px',
+                              fontSize: 18,
+                              color: '#ef4444',
+                            }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                
+                {!isRunning && (
+                  <button 
+                    type="button" 
+                    className="link-button" 
+                    onClick={addProductRow}
+                    style={{
+                      marginTop: 8,
+                      padding: '8px 16px',
+                      background: '#f0f9ff',
+                      border: '1px dashed #93c5fd',
+                      borderRadius: 8,
+                      color: '#2563eb',
+                      fontWeight: 500,
+                    }}
+                  >
+                    + Add another product
+                  </button>
+                )}
+
+                {(!targetProfile.email && !pokemonProfile.email) && (
+                  <div className="warn-banner" style={{ marginTop: 16 }}>
+                    ⚠️ No profile saved for any platform — set up your details in Profile & Card first.
+                  </div>
+                )}
+                {targetProfile.email && !pokemonProfile.email && (
+                  <div className="warn-banner" style={{ background: '#fff3cd', border: '1px solid #ffc107', marginTop: 16 }}>
+                    ⚡ Pokémon Center profile not configured. Click <strong>"Copy from Target"</strong> in the profile tab to quickly set it up.
+                  </div>
+                )}
+                {!targetProfile.email && pokemonProfile.email && (
+                  <div className="warn-banner" style={{ background: '#fff3cd', border: '1px solid #ffc107', marginTop: 16 }}>
+                    🎯 Target profile not configured. Click <strong>"Copy from Pokémon"</strong> in the profile tab to quickly set it up.
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -235,9 +479,29 @@ function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, i
                     cursor: 'pointer',
                     fontSize: 13,
                     color: '#4b5563',
+                    marginRight: 8,
                   }}
+                  title="Copy Target profile data to Pokémon Center fields"
                 >
                   📋 Copy from Target
+                </button>
+              )}
+              {activeProfileTab === 'target' && pokemonProfile.email && (
+                <button
+                  type="button"
+                  onClick={copyFromPokemon}
+                  style={{
+                    padding: '8px 16px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: 6,
+                    background: '#f9fafb',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    color: '#4b5563',
+                  }}
+                  title="Copy Pokémon Center profile data to Target fields"
+                >
+                  📋 Copy from Pokémon
                 </button>
               )}
             </div>
@@ -435,16 +699,28 @@ function ScraperForm({ mode, profile, onSave, onStart, onStop, onStopCheckout, i
         )}
 
         {mode === 'run' ? (
-          <div style={{ display: 'flex', gap: 10 }}>
-            <button type="submit" className="submit-button" disabled={isRunning}>
+          <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+            <button 
+              type="submit" 
+              className="submit-button" 
+              disabled={isRunning || productUrls.filter(p => p.url.trim()).length === 0}
+              style={{
+                opacity: isRunning || productUrls.filter(p => p.url.trim()).length === 0 ? 0.6 : 1,
+                cursor: isRunning || productUrls.filter(p => p.url.trim()).length === 0 ? 'not-allowed' : 'pointer',
+              }}
+            >
               {isRunning ? '⏳ Monitoring...' : '🚀 Start Monitoring'}
             </button>
             {isRunning && (
-              <button type="button" className="clear-button" onClick={onStop}>Stop All</button>
+              <button type="button" className="clear-button" onClick={onStop}>
+                🛑 Stop All
+              </button>
             )}
           </div>
         ) : (
-          <button type="submit" className="submit-button">💾 Save All Profiles</button>
+          <button type="submit" className="submit-button" style={{ marginTop: 20 }}>
+            💾 Save All Profiles
+          </button>
         )}
       </form>
     </div>

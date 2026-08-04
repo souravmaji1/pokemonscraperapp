@@ -1,4 +1,4 @@
-// scraper.js - Updated to use puppeteer-real-browser + loader-aware waiting for targetplatform
+// scraper.js - Updated for direct Place Order flow after login
 const { connect } = require('puppeteer-real-browser');
 const { platform } = require('os');
 
@@ -31,7 +31,6 @@ function getChromeExecutablePath() {
 
 const PAGE_TIMEOUT = 30000;
 
-// Override log function to use IPC if available
 function log(tag, message, type = 'info') {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] [${tag}] ${message}`);
@@ -47,9 +46,6 @@ function log(tag, message, type = 'info') {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ────────────────────────────────────────────────────────────────────────
-// FAST loader detection – tightened selectors + short timeouts
-// ────────────────────────────────────────────────────────────────────────
 function isDead(page) {
   try {
     return !page.browser().isConnected();
@@ -61,7 +57,7 @@ function isDead(page) {
 async function waitForLoadersToClear(
   page,
   tag = "loader-wait",
-  timeoutMs = 7000,          // was 20000 – now aggressive
+  timeoutMs = 7000,
   pollInterval = 220
 ) {
   const start = Date.now();
@@ -85,8 +81,6 @@ async function waitForLoadersToClear(
           return true;
         };
 
-        // ONLY real loading indicators – removed the overly broad ones
-        // that were matching permanent Target UI
         const selectors = [
           '[class*="skeleton" i]:not([class*="skeleton-none"])',
           '[class*="Skeleton" i]',
@@ -98,8 +92,8 @@ async function waitForLoadersToClear(
           '[data-test*="skeleton" i]',
           '[data-test*="loading-indicator" i]',
           '[data-test*="spinner" i]',
-          '[aria-busy="true"][class*="load" i]',   // only when it also looks like a loader
-          '.styles_LoadingSpinner__',              // Target-style hashed classes sometimes appear
+          '[aria-busy="true"][class*="load" i]',
+          '.styles_LoadingSpinner__',
           '[class*="styles_Skeleton"]',
         ];
 
@@ -114,7 +108,7 @@ async function waitForLoadersToClear(
           for (const el of nodes) {
             if (isVisible(el)) {
               count++;
-              break; // one visible match per pattern is enough signal
+              break;
             }
           }
         }
@@ -125,7 +119,6 @@ async function waitForLoadersToClear(
         log(tag, "🛑 Browser closed — aborting wait.");
         throw new Error("STOPPED_BY_USER");
       }
-      // Page is mid-navigation – treat as "still loading" but don't burn the whole timeout
       loaderCount = 1;
     }
 
@@ -133,12 +126,10 @@ async function waitForLoadersToClear(
       if (everSawLoader) {
         log(tag, "✅ Loader(s) cleared.");
       }
-      // Fast path: no loaders → return immediately
       return true;
     }
 
     everSawLoader = true;
-    // only log every ~1 s so the console isn't flooded
     if ((Date.now() - start) % 1000 < pollInterval + 50) {
       log(tag, `Loader still visible (${loaderCount}) – waiting…`);
     }
@@ -168,8 +159,8 @@ async function waitReadyThenSelector(
   page,
   selector,
   {
-    loaderTimeout = 6000,     // was 20000
-    selectorTimeout = 8000,   // was 15000
+    loaderTimeout = 6000,
+    selectorTimeout = 8000,
     pollInterval = 300,
     tag = "wait-ready",
   } = {}
@@ -177,9 +168,6 @@ async function waitReadyThenSelector(
   await waitForLoadersToClear(page, tag, loaderTimeout, 200);
   return waitForSelectorPolling(page, selector, selectorTimeout, pollInterval);
 }
-
-
-
 
 async function dismissInterstitials(page) {
   const tag = "interstitial";
@@ -247,7 +235,6 @@ async function dismissTargetCircleModal(page) {
 async function loginIfNeeded(page, email, password) {
   const tag = "login";
 
-  // Wait for the login section's own skeletons before looking for the form
   await waitForLoadersToClear(page, tag, 5000);
 
   const emailInput = await waitReadyThenSelector(
@@ -376,7 +363,6 @@ async function loginIfNeeded(page, email, password) {
     await signInBtn.asElement().click();
     log(tag, "Sign-in button clicked. Waiting for auth to resolve...");
 
-    // Give the auth spinner room to appear and clear before we start polling
     await sleep(1000);
     await waitForLoadersToClear(page, tag, 6000);
 
@@ -429,143 +415,143 @@ async function loginIfNeeded(page, email, password) {
   }
 }
 
-async function fillShippingAddress(page, shipping) {
-  const tag = "shipping";
-  log(tag, "Handling shipping address step...");
+// ─── NEW: Simplified checkout helper ──────────────────────────────────────
 
-  // Wait out any skeletons on the shipping/checkout section before reading it
-  await waitForLoadersToClear(page, tag, 6000);
+async function clickPlaceOrderAndHandleCVV(page, card) {
+  const tag = "place-order";
 
-  try {
-    // Check if we're on the checkout page with address selection
-    const addressRadios = await page.$$('[data-test*="radio-"]');
+  // Wait for everything to be stable
+  await waitForLoadersToClear(page, tag, 8000);
+  await sleep(1500);
 
-    if (addressRadios.length > 0) {
-      log(tag, `Found ${addressRadios.length} address radio(s), selecting first one...`);
+  // Look for the Place Order button (from the HTML: data-test="placeOrderButton")
+  log(tag, "Looking for Place your order button...");
 
-      const firstRadioInput = await page.$('[data-test*="radio-"]');
-      if (firstRadioInput) {
-        const radioId = await page.evaluate(el => el.id, firstRadioInput);
-        log(tag, `Selecting address radio: ${radioId}`);
+  const placeOrderBtn = await waitReadyThenSelector(
+    page,
+    '[data-test="placeOrderButton"]:not([disabled]), button:has-text("Place your order")',
+    { selectorTimeout: 10000, tag }
+  );
 
-        await firstRadioInput.click();
-        await sleep(1000);
-
-        const isChecked = await page.evaluate(el => el.checked, firstRadioInput);
-        log(tag, `Radio checked: ${isChecked}`);
-      }
-
-      const saveBtn = await waitReadyThenSelector(
-        page,
-        '[data-test="save_and_continue_button_step_SHIPPING"]',
-        { selectorTimeout: 10000, tag }
-      );
-
-      if (saveBtn) {
-        log(tag, "Clicking Save & continue for shipping...");
-        await saveBtn.click();
-        await waitForLoadersToClear(page, tag, 6000);
-        await sleep(2000);
-        log(tag, `After shipping save URL: ${page.url()}`);
-
-        await handleVerifyAddressModal(page);
-        return true;
-      } else {
-        log(tag, "⚠️  Save & continue button not found in shipping.");
-        return false;
-      }
+  if (!placeOrderBtn) {
+    // Check if button exists but is disabled
+    const disabledBtn = await page.$('[data-test="placeOrderButton"][disabled]');
+    if (disabledBtn) {
+      log(tag, "⚠️  Place Order button is disabled. Account may need address/payment setup first.");
+      log(tag, "Attempting to navigate through shipping/payment steps...");
+      
+      // Fall back to the full checkout flow if button is disabled
+      const fullFlowResult = await handlePaymentAndPlaceOrderFull(page, card);
+      return fullFlowResult;
     }
-
-    // If no radio buttons, check if address is already saved
-    const savedAddress = await page.$('[data-test="cart-shipping-address"]');
-    if (savedAddress) {
-      log(tag, "✅  Address is already saved and displayed.");
-      return true;
-    }
-
-    // If we need to fill the form manually
-    log(tag, "Filling shipping address form manually...");
-    await waitForLoadersToClear(page, tag, 6000);
-    await page.waitForSelector('#first_name', { timeout: 5000 });
-    await sleep(1000);
-
-    const fnEl = await page.$('#first_name');
-    if (fnEl) { await fnEl.click({ clickCount: 3 }); await fnEl.type(shipping.firstName, { delay: 60 }); }
-
-    const lnEl = await page.$('#last_name');
-    if (lnEl) { await lnEl.click({ clickCount: 3 }); await lnEl.type(shipping.lastName, { delay: 60 }); }
-
-    const addr1El = await page.$('#address_line1');
-    if (addr1El) {
-      await addr1El.click({ clickCount: 3 });
-      await addr1El.type(shipping.address1, { delay: 60 });
-      await sleep(1500);
-      await page.keyboard.press('Escape');
-      await sleep(500);
-    }
-
-    const zipEl = await page.$('#zip_code');
-    if (zipEl) { await zipEl.click({ clickCount: 3 }); await zipEl.type(shipping.zip, { delay: 60 }); await sleep(1500); }
-
-    const cityEl = await page.$('#city');
-    if (cityEl) { await cityEl.click({ clickCount: 3 }); await cityEl.type(shipping.city, { delay: 60 }); }
-
-    await page.select('#state', shipping.state);
-    await sleep(500);
-
-    const phoneEl = await page.$('#phone_number');
-    if (phoneEl) { await phoneEl.click({ clickCount: 3 }); await phoneEl.type(shipping.phone, { delay: 60 }); }
-
-    await sleep(1000);
-
-    const saveBtn = await page.$('[data-test="save_and_continue_button_step_SHIPPING"]');
-    if (saveBtn) {
-      log(tag, "Clicking Save & continue...");
-      await saveBtn.click();
-      await waitForLoadersToClear(page, tag, 6000);
-      await sleep(1500);
-      log(tag, `After save URL: ${page.url()}`);
-    }
-
-    await handleVerifyAddressModal(page);
-    return true;
-  } catch (err) {
-    log(tag, `❌ Error in shipping: ${err.message}`);
+    
+    log(tag, "⚠️  Place Order button not found at all.");
     return false;
   }
+
+  log(tag, "✅  Place Order button found and enabled! Clicking...");
+
+  // Scroll the button into view
+  await page.evaluate((btn) => {
+    btn.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, placeOrderBtn);
+  await sleep(500);
+
+  // Click the button
+  await placeOrderBtn.click();
+  log(tag, "Place Order button clicked.");
+
+  // Wait for any navigation or modal
+  await waitForLoadersToClear(page, tag, 6000);
+  await sleep(2000);
+
+  log(tag, `After Place Order click - URL: ${page.url()}`);
+
+  // Handle CVV confirmation modal if it appears
+  await handleCVVModal(page, card);
+
+  return true;
 }
 
-async function handleVerifyAddressModal(page) {
-  const tag = "verify-address";
-  log(tag, "Checking for verify address modal...");
-  await waitForLoadersToClear(page, tag, 5000);
-  await sleep(1000);
+async function handleCVVModal(page, card) {
+  const tag = "cvv-modal";
+  log(tag, "Checking for CVV confirmation modal...");
 
-  const useUnverifiedBtn = await waitForSelectorPolling(
+  await waitForLoadersToClear(page, tag, 5000);
+  await sleep(1500);
+
+  const cvvInput = await waitForSelectorPolling(
     page,
-    '[data-test="useUnverifiedAddressButton"]',
+    '#enter-cvv, input[name="cvv"], input[data-test="cvv-input"]',
     8000
   );
 
-  if (useUnverifiedBtn) {
-    log(tag, "Detected verify address modal. Clicking 'Use unverified address'...");
-    await useUnverifiedBtn.click();
-    await waitForLoadersToClear(page, tag, 5000);
-    await sleep(1500);
-  } else {
-    log(tag, "No verify address modal — address accepted.");
+  if (cvvInput) {
+    log(tag, "CVV confirmation modal detected!");
+
+    await cvvInput.click({ clickCount: 3 });
+    await cvvInput.type(card.cvv, { delay: 100 });
+    await sleep(500);
+
+    // Look for confirm button
+    const confirmBtnSelectors = [
+      '[data-test="confirm-button"]',
+      'button:has-text("Confirm")',
+      'button:has-text("Submit")',
+      'button[type="submit"]',
+    ];
+
+    let confirmBtn = null;
+    for (const sel of confirmBtnSelectors) {
+      confirmBtn = await page.$(sel);
+      if (confirmBtn) break;
+    }
+
+    if (confirmBtn) {
+      log(tag, "Clicking Confirm button...");
+      await confirmBtn.click();
+      await waitForLoadersToClear(page, tag, 5000);
+      await sleep(2000);
+      log(tag, `After CVV confirmation URL: ${page.url()}`);
+      return true;
+    } else {
+      log(tag, "⚠️  Confirm button not found in CVV modal.");
+      return false;
+    }
   }
+
+  // Check for order confirmation page
+  const confirmationIndicators = [
+    '[data-test="orderConfirmation"]',
+    '.styles_order-confirmation__',
+    'h1:has-text("Order confirmed")',
+    'h2:has-text("Thank you")',
+    '[data-test="confirmation-number"]',
+  ];
+
+  for (const sel of confirmationIndicators) {
+    const found = await page.$(sel);
+    if (found) {
+      log(tag, "🎉  Order confirmation page detected! Order placed successfully!");
+      return true;
+    }
+  }
+
+  log(tag, "No CVV modal detected - order may have been placed directly.");
+  return false;
 }
 
-async function handlePaymentAndPlaceOrder(page, card) {
-  const tag = "payment-order";
-  log(tag, "Handling payment and order placement...");
+// ─── Fallback: Full payment flow if Place Order was disabled ──────────────
+
+async function handlePaymentAndPlaceOrderFull(page, card) {
+  const tag = "payment-full";
+  log(tag, "Running full payment flow...");
 
   await waitForLoadersToClear(page, tag, 8000);
   await sleep(1500);
 
-  // Check if we're already on the final review page with saved payment
-  const savedPayment = await page.$('[data-test="cart-order-notes-wrapper"]');
+  // Check if payment is already saved
+  const savedPayment = await page.$('[data-test="cart-order-notes-wrapper"], [data-test="IconPaymentVisa"]');
 
   if (savedPayment) {
     log(tag, "✅  Payment already saved - looking for Place Order button...");
@@ -585,8 +571,6 @@ async function handlePaymentAndPlaceOrder(page, card) {
 
       await handleCVVModal(page, card);
       return true;
-    } else {
-      log(tag, "Place Order button not enabled yet, checking if we need to save payment...");
     }
   }
 
@@ -594,11 +578,10 @@ async function handlePaymentAndPlaceOrder(page, card) {
   const existingPayment = await page.$('[data-test*="payment-card-radio-"]');
 
   if (existingPayment) {
-    log(tag, "Payment card found.");
+    log(tag, "Payment card found. Selecting...");
 
     const isChecked = await page.evaluate(el => el.checked, existingPayment);
     if (!isChecked) {
-      log(tag, "Selecting existing card...");
       await existingPayment.click();
       await sleep(1000);
     }
@@ -614,7 +597,6 @@ async function handlePaymentAndPlaceOrder(page, card) {
       await paymentSaveBtn.click();
       await waitForLoadersToClear(page, tag, 7000);
       await sleep(2000);
-      log(tag, `After payment save URL: ${page.url()}`);
 
       const placeOrderBtn = await waitReadyThenSelector(
         page,
@@ -627,19 +609,14 @@ async function handlePaymentAndPlaceOrder(page, card) {
         await placeOrderBtn.click();
         await waitForLoadersToClear(page, tag, 6000);
         await sleep(2000);
-        log(tag, `After place order URL: ${page.url()}`);
-
         await handleCVVModal(page, card);
         return true;
-      } else {
-        log(tag, "⚠️  Place Order button not enabled after payment save.");
-        return false;
       }
     }
   }
 
-  // If no saved payment, try to add new card
-  log(tag, "No existing payment found. Looking for add payment button...");
+  // Try to add new card
+  log(tag, "Looking for add payment button...");
 
   const addPaymentBtn = await waitReadyThenSelector(
     page,
@@ -656,22 +633,7 @@ async function handlePaymentAndPlaceOrder(page, card) {
 
   const cardFieldFilled = await fillCardInIframeOrDirect(page, card);
   if (!cardFieldFilled) {
-    log(tag, "⚠️  Could not fill card details, checking for Place Order button...");
-
-    const placeOrderBtn = await waitReadyThenSelector(
-      page,
-      '[data-test="placeOrderButton"]:not([disabled])',
-      { selectorTimeout: 10000, tag }
-    );
-
-    if (placeOrderBtn) {
-      log(tag, "✅  Place Order button found despite no card input!");
-      await placeOrderBtn.click();
-      await waitForLoadersToClear(page, tag, 5000);
-      await sleep(2000);
-      await handleCVVModal(page, card);
-      return true;
-    }
+    log(tag, "⚠️  Could not fill card details.");
     return false;
   }
 
@@ -688,7 +650,6 @@ async function handlePaymentAndPlaceOrder(page, card) {
     await paymentSaveBtn.click();
     await waitForLoadersToClear(page, tag, 5000);
     await sleep(2000);
-    log(tag, `After payment save URL: ${page.url()}`);
 
     const placeOrderBtn = await waitReadyThenSelector(
       page,
@@ -701,8 +662,6 @@ async function handlePaymentAndPlaceOrder(page, card) {
       await placeOrderBtn.click();
       await waitForLoadersToClear(page, tag, 5000);
       await sleep(2000);
-      log(tag, `After place order URL: ${page.url()}`);
-
       await handleCVVModal(page, card);
       return true;
     }
@@ -776,43 +735,7 @@ async function fillCardInIframeOrDirect(page, card) {
   return false;
 }
 
-async function handleCVVModal(page, card) {
-  const tag = "cvv-modal";
-  log(tag, "Checking for CVV confirmation modal...");
-
-  await waitForLoadersToClear(page, tag, 5000);
-  await sleep(1500);
-
-  const cvvInput = await waitForSelectorPolling(
-    page,
-    '#enter-cvv',
-    5000
-  );
-
-  if (cvvInput) {
-    log(tag, "CVV confirmation modal detected!");
-
-    await cvvInput.click();
-    await cvvInput.type(card.cvv, { delay: 100 });
-    await sleep(500);
-
-    const confirmBtn = await page.$('[data-test="confirm-button"]');
-    if (confirmBtn) {
-      log(tag, "Clicking Confirm button...");
-      await confirmBtn.click();
-      await waitForLoadersToClear(page, tag, 5000);
-      await sleep(2000);
-      log(tag, `After CVV confirmation URL: ${page.url()}`);
-      return true;
-    } else {
-      log(tag, "⚠️  Confirm button not found in modal.");
-      return false;
-    }
-  }
-
-  log(tag, "No CVV modal detected - order may have been placed directly.");
-  return false;
-}
+// ─── Main Checkout Flow ───────────────────────────────────────────────────
 
 async function runCheckout(page, config) {
   const tag = "checkout";
@@ -877,7 +800,7 @@ async function runCheckout(page, config) {
     }
 
     if (!addToCartBtn) {
-      log(tag, "⚠️  No clickable Add to Cart button found after 30s.");
+      log(tag, "⚠️  No clickable Add to Cart button found after 8s.");
       return false;
     }
 
@@ -966,8 +889,6 @@ async function runCheckout(page, config) {
       await sleep(1500);
     }
 
-    // Checkout pages tend to have the longest skeleton states — give this
-    // one the most patience.
     await waitForLoadersToClear(page, tag, 8000);
 
     // ── STEP 6: Handle login ─────────────────────────────────────────────
@@ -1007,29 +928,50 @@ async function runCheckout(page, config) {
     }
 
     await waitForLoadersToClear(page, tag, 8000);
-    await sleep(1500);
+    await sleep(2000);
 
-    // ── STEP 8: Handle shipping address ──────────────────────────────────
-    const shippingOk = await fillShippingAddress(page, config.shipping);
-    if (!shippingOk) {
-      log(tag, "❌  Shipping address step failed.");
-      return false;
+    // ── STEP 8: Check if checkout page has everything pre-filled ─────────
+    // Based on the HTML provided, after login the checkout page shows:
+    // - Cart items with total
+    // - Shipping address pre-filled
+    // - Payment method saved
+    // - Place Order button
+
+    const placeOrderBtn = await page.$('[data-test="placeOrderButton"]');
+    const shippingAddress = await page.$('[data-test="cart-shipping-address"]');
+    const savedPayment = await page.$('[data-test="IconPaymentVisa"]');
+
+    log(tag, "Checking checkout page state:");
+    log(tag, `  - Place Order button present: ${!!placeOrderBtn}`);
+    log(tag, `  - Shipping address present: ${!!shippingAddress}`);
+    log(tag, `  - Payment method present: ${!!savedPayment}`);
+
+    // ── STEP 9: Click Place Order and handle CVV ─────────────────────────
+    if (placeOrderBtn || shippingAddress || savedPayment) {
+      // Everything looks pre-filled - just click Place Order
+      log(tag, "✅  Checkout page has all required fields. Clicking Place Order directly...");
+      const orderPlaced = await clickPlaceOrderAndHandleCVV(page, config.card);
+      
+      if (orderPlaced) {
+        log(tag, "🎉  Order process completed!");
+        log(tag, `Final URL: ${page.url()}`);
+        return true;
+      }
     }
 
-    await waitForLoadersToClear(page, tag, 5000);
-    await sleep(1000);
-
-    // ── STEP 9: Handle payment and place order ───────────────────────────
-    const orderPlaced = await handlePaymentAndPlaceOrder(page, config.card);
+    // If direct Place Order didn't work, fall back to full flow
+    log(tag, "Direct Place Order approach failed. Falling back to full checkout flow...");
+    const orderPlaced = await handlePaymentAndPlaceOrderFull(page, config.card);
+    
     if (orderPlaced) {
-      log(tag, "🎉  Order process completed!");
+      log(tag, "🎉  Order process completed via full flow!");
       log(tag, `Final URL: ${page.url()}`);
       return true;
-    } else {
-      log(tag, "⚠️  Could not place order. Check page manually.");
-      log(tag, `Current URL: ${page.url()}`);
-      return false;
     }
+
+    log(tag, "⚠️  Could not place order through any method.");
+    log(tag, `Current URL: ${page.url()}`);
+    return false;
 
   } catch (err) {
     log(tag, `❌ Checkout flow failed: ${err.message}`);
@@ -1050,30 +992,29 @@ async function runScraper(config, onBrowserReady) {
 
     const chromePath = getChromeExecutablePath();
 
-   const connectConfig = {
-  headless: false,
-  args: [
-    '--no-sandbox',
-    '--disable-infobars',
-    '--disable-blink-features=AutomationControlled',
-    '--start-minimized',
-    '--window-position=9999,9999',
-    '--window-size=800,600',
-    '--suppress-message-center-popups',
-    '--disable-notifications',
-  ],
-  ignoreDefaultArgs: ['--enable-automation'],
-};
-if (chromePath) {
-  connectConfig.customConfig = { executablePath: chromePath };
-}
+    const connectConfig = {
+      headless: false,
+      args: [
+        '--no-sandbox',
+        '--disable-infobars',
+        '--disable-blink-features=AutomationControlled',
+        '--start-minimized',
+        '--window-position=9999,9999',
+        '--window-size=800,600',
+       '--suppress-message-center-popups',
+        '--disable-notifications',
+      ],
+      ignoreDefaultArgs: ['--enable-automation'],
+    };
+    if (chromePath) {
+      connectConfig.customConfig = { executablePath: chromePath };
+    }
 
-const connectionResult = await connect(connectConfig);
+    const connectionResult = await connect(connectConfig);
 
     browser = connectionResult.browser;
     page = connectionResult.page;
 
-    // Hand the browser back to the caller immediately so it can be force-closed on demand
     if (onBrowserReady) onBrowserReady(browser);
 
     log("main", "Connected to real browser instance.");
@@ -1110,7 +1051,5 @@ const connectionResult = await connect(connectConfig);
     return { success: false, error: stopped ? 'Stopped by user' : err.message, stopped };
   }
 }
-
-
 
 module.exports = { runScraper };

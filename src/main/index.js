@@ -499,3 +499,34 @@ ipcMain.handle('has-profile', async () => {
     return { success: false, error: error.message };
   }
 });
+
+// Save product URLs
+ipcMain.handle('save-products', async (event, products) => {
+  try {
+    store.set('savedProducts', products);
+    return { success: true };
+  } catch (error) {
+    console.error('Error saving products:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+// Load product URLs
+ipcMain.handle('load-products', async () => {
+  try {
+    const products = store.get('savedProducts');
+    return { success: true, products: products || [] };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Clear saved products
+ipcMain.handle('clear-products', async () => {
+  try {
+    store.delete('savedProducts');
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
