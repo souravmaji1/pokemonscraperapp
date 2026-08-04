@@ -62,9 +62,9 @@ async function monitorPokemonProduct(url, name, { onLog, onInStock, checkInterva
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
-      //  '--start-minimized',
-       // '--window-position=9999,9999',
-       // '--window-size=800,600',
+        '--start-minimized',
+        '--window-position=9999,9999',
+        '--window-size=800,600',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     };
