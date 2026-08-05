@@ -914,7 +914,7 @@ async function runCheckout(page, config) {
       const checkoutBtn2 = await waitReadyThenSelector(
         page,
         '[data-test="checkout-button"], button:has-text("Check out")',
-        { selectorTimeout: 10000, tag }
+        { selectorTimeout: 5000, tag }
       );
       if (checkoutBtn2) {
         try {
@@ -930,46 +930,62 @@ async function runCheckout(page, config) {
     await waitForLoadersToClear(page, tag, 8000);
     await sleep(2000);
 
-    // ── STEP 8: Check if checkout page has everything pre-filled ─────────
-    // Based on the HTML provided, after login the checkout page shows:
-    // - Cart items with total
-    // - Shipping address pre-filled
-    // - Payment method saved
-    // - Place Order button
+  
 
-    const placeOrderBtn = await page.$('[data-test="placeOrderButton"]');
-    const shippingAddress = await page.$('[data-test="cart-shipping-address"]');
-    const savedPayment = await page.$('[data-test="IconPaymentVisa"]');
+     // // ── STEP 8: Check if checkout page has everything pre-filled ─────────
+    // // Based on the HTML provided, after login the checkout page shows:
+    // // - Cart items with total
+    // // - Shipping address pre-filled
+    // // - Payment method saved
+    // // - Place Order button
 
-    log(tag, "Checking checkout page state:");
-    log(tag, `  - Place Order button present: ${!!placeOrderBtn}`);
-    log(tag, `  - Shipping address present: ${!!shippingAddress}`);
-    log(tag, `  - Payment method present: ${!!savedPayment}`);
+    // const placeOrderBtn = await page.$('[data-test="placeOrderButton"]');
+    // const shippingAddress = await page.$('[data-test="cart-shipping-address"]');
+    // const savedPayment = await page.$('[data-test="IconPaymentVisa"]');
 
-    // ── STEP 9: Click Place Order and handle CVV ─────────────────────────
-    if (placeOrderBtn || shippingAddress || savedPayment) {
-      // Everything looks pre-filled - just click Place Order
-      log(tag, "✅  Checkout page has all required fields. Clicking Place Order directly...");
-      const orderPlaced = await clickPlaceOrderAndHandleCVV(page, config.card);
-      
-      if (orderPlaced) {
-        log(tag, "🎉  Order process completed!");
-        log(tag, `Final URL: ${page.url()}`);
-        return true;
-      }
-    }
+    // log(tag, "Checking checkout page state:");
+    // log(tag, `  - Place Order button present: ${!!placeOrderBtn}`);
+    // log(tag, `  - Shipping address present: ${!!shippingAddress}`);
+    // log(tag, `  - Payment method present: ${!!savedPayment}`);
 
-    // If direct Place Order didn't work, fall back to full flow
-    log(tag, "Direct Place Order approach failed. Falling back to full checkout flow...");
-    const orderPlaced = await handlePaymentAndPlaceOrderFull(page, config.card);
+    // // ── STEP 9: Click Place Order and handle CVV ─────────────────────────
+    // if (placeOrderBtn || shippingAddress || savedPayment) {
+    //   // Everything looks pre-filled - just click Place Order
+    //   log(tag, "✅  Checkout page has all required fields. Clicking Place Order directly...");
+    //   const orderPlaced = await clickPlaceOrderAndHandleCVV(page, config.card);
+    //   
+    //   if (orderPlaced) {
+    //     log(tag, "🎉  Order process completed!");
+    //     log(tag, `Final URL: ${page.url()}`);
+    //     return true;
+    //   }
+    // }
+
+    // // If direct Place Order didn't work, fall back to full flow
+    // log(tag, "Direct Place Order approach failed. Falling back to full checkout flow...");
+    // const orderPlaced = await handlePaymentAndPlaceOrderFull(page, config.card);
+    // 
+    // if (orderPlaced) {
+    //   log(tag, "🎉  Order process completed via full flow!");
+    //   log(tag, `Final URL: ${page.url()}`);
+    //   return true;
+    // }
+
+    // log(tag, "⚠️  Could not place order through any method.");
+    // log(tag, `Current URL: ${page.url()}`);
+    // return false;
+
+    // ── STEP 8: Click Place Order directly ─────────────────────────────
+    log(tag, "Clicking Place Order directly without checking pre-filled fields...");
+    const orderPlaced = await clickPlaceOrderAndHandleCVV(page, config.card);
     
     if (orderPlaced) {
-      log(tag, "🎉  Order process completed via full flow!");
+      log(tag, "🎉  Order process completed!");
       log(tag, `Final URL: ${page.url()}`);
       return true;
     }
 
-    log(tag, "⚠️  Could not place order through any method.");
+    log(tag, "⚠️  Could not place order.");
     log(tag, `Current URL: ${page.url()}`);
     return false;
 
@@ -999,10 +1015,10 @@ async function runScraper(config, onBrowserReady) {
         '--disable-infobars',
         '--disable-blink-features=AutomationControlled',
         '--start-minimized',
-        '--window-position=9999,9999',
-        '--window-size=800,600',
-       '--suppress-message-center-popups',
-        '--disable-notifications',
+    //    '--window-position=9999,9999',
+     //   '--window-size=800,600',
+     //  '--suppress-message-center-popups',
+     //   '--disable-notifications',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     };
