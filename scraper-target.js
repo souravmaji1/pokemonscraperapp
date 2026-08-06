@@ -976,14 +976,190 @@ async function runCheckout(page, config) {
     // return false;
 
     // ── STEP 8: Click Place Order directly ─────────────────────────────
-    log(tag, "Clicking Place Order directly without checking pre-filled fields...");
-    const orderPlaced = await clickPlaceOrderAndHandleCVV(page, config.card);
-    
-    if (orderPlaced) {
-      log(tag, "🎉  Order process completed!");
-      log(tag, `Final URL: ${page.url()}`);
-      return true;
+   // ─── STEP 8: Smart Payment Handling ─────────────────────────────
+log(tag, "Checking checkout page state...");
+
+// Check if we're on a page with payment selection UI
+const saveAndContinueBtn = await page.$('[data-test="save_and_continue_button_step_PAYMENT"]');
+const placeOrderBtnDisabled = await page.$('[data-test="placeOrderButton"][disabled]');
+const placeOrderBtnEnabled = await page.$('[data-test="placeOrderButton"]:not([disabled])');
+
+if (placeOrderBtnEnabled) {
+  // Cards are already saved and everything is ready - go straight to place order
+  log(tag, "✅ Payment already saved - Place Order button is enabled! Skipping payment selection...");
+} else if (saveAndContinueBtn && placeOrderBtnDisabled) {
+  // Payment section is shown, need to confirm selection
+  log(tag, "Payment selection required - checking card status...");
+  
+  // Check if a payment card is already selected
+  const selectedCard = await page.evaluate(() => {
+    const checkedRadio = document.querySelector('input[type="radio"][aria-checked="true"]');
+    if (checkedRadio) {
+      return {
+        label: checkedRadio.getAttribute('aria-label') || '',
+        id: checkedRadio.id,
+        value: checkedRadio.value
+      };
     }
+    return null;
+  });
+  
+  if (selectedCard) {
+    log(tag, `✅ Payment card already selected: ${selectedCard.label || selectedCard.id}`);
+    log(tag, "Clicking 'Save and continue' to proceed...");
+    
+    await saveAndContinueBtn.click();
+    log(tag, "Clicked Save and continue - waiting for Place Order button...");
+    
+    await waitForLoadersToClear(page, tag, 8000);
+    await sleep(2000);
+    
+    log(tag, `URL after Save and continue: ${page.url()}`);
+  } else {
+    log(tag, "⚠️ No payment card selected - attempting to select first available...");
+    
+    // Try to select the first available card
+    const firstCardRadio = await page.$('input[type="radio"]:not([disabled]):not([value="APPLEPAY"]):not([value="PAYPAL"]):not([value="CASHAPP"]):not([value="AFFIRM"])');
+    if (firstCardRadio) {
+      await firstCardRadio.click();
+      await sleep(1000);
+      log(tag, "Selected first available card.");
+      
+      // Click Save and continue
+      await saveAndContinueBtn.click();
+      await waitForLoadersToClear(page, tag, 8000);
+      await sleep(2000);
+    } else {
+      log(tag, "❌ No payment cards available to select!");
+      return false;
+    }
+  }
+} else if (!saveAndContinueBtn && !placeOrderBtnEnabled && placeOrderBtnDisabled) {
+  // Place Order button exists but is disabled, and no save & continue button
+  log(tag, "Place Order button disabled but no payment selection UI found. Checking for other issues...");
+  
+  // Check for error messages or required fields
+  const errors = await page.evaluate(() => {
+    const errorElements = document.querySelectorAll('[class*="error"], [data-test*="error"], [role="alert"], .styles_error__');
+    return Array.from(errorElements).map(el => (el.innerText || el.textContent || "").trim()).filter(t => t.length > 0);
+  });
+  
+  if (errors.length > 0) {
+    log(tag, `⚠️ Errors found: ${errors.join(' | ')}`);
+    return false;
+  }
+  
+  // Maybe shipping/pickup needs to be confirmed
+  const shippingContinue = await page.$('[data-test="save_and_continue_button_step_SHIPPING"], [data-test="save_and_continue_button_step_PICKUP"]');
+  if (shippingContinue) {
+    log(tag, "Shipping/Pickup needs confirmation - clicking continue...");
+    await shippingContinue.click();
+    await waitForLoadersToClear(page, tag, 8000);
+    await sleep(2000);
+  }
+}
+
+// ── STEP 9: Final Place Order ────────────────────────────────────
+log(tag, "Waiting for Place Order button to be enabled...");
+
+// Wait for Place Order button to become enabled (if it isn't already)
+let finalPlaceOrderBtn = await waitReadyThenSelector(
+  page,
+  '[data-test="placeOrderButton"]:not([disabled])',
+  { selectorTimeout: 20000, tag }
+);
+
+if (!finalPlaceOrderBtn) {
+  log(tag, "⚠️ Place Order button did not become enabled. Checking final state...");
+  
+  // Last attempt: maybe we need to scroll or there's a modal
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await sleep(1000);
+  
+  finalPlaceOrderBtn = await page.$('[data-test="placeOrderButton"]:not([disabled])');
+}
+
+if (finalPlaceOrderBtn) {
+  log(tag, "✅ Place Order button is enabled! Clicking to place order...");
+  
+  // Scroll button into view and click
+  await page.evaluate((btn) => {
+    btn.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, finalPlaceOrderBtn);
+  await sleep(500);
+  
+  await finalPlaceOrderBtn.click();
+  log(tag, "Place Order button clicked!");
+  
+  await waitForLoadersToClear(page, tag, 8000);
+  await sleep(2000);
+  
+  log(tag, `URL after Place Order click: ${page.url()}`);
+  
+  // Handle CVV confirmation modal if it appears
+  await handleCVVModal(page, config.card);
+  
+  // Check for order confirmation
+  const orderConfirmed = await page.evaluate(() => {
+    const confirmationSelectors = [
+      '[data-test="orderConfirmation"]',
+      '.styles_order-confirmation__',
+      'h1',
+      'h2',
+      '[data-test="confirmation-number"]',
+      '[data-test="order-number"]'
+    ];
+    
+    for (const sel of confirmationSelectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        const text = (el.innerText || el.textContent || "").toLowerCase();
+        if (text.includes('order confirmed') || 
+            text.includes('thank you') || 
+            text.includes('order number') ||
+            text.includes('confirmation')) {
+          return { found: true, text: text.substring(0, 200) };
+        }
+      }
+    }
+    return { found: false, text: '' };
+  });
+  
+  if (orderConfirmed.found) {
+    log(tag, `🎉 Order confirmation detected: "${orderConfirmed.text}"`);
+    log(tag, "🎉 Order placed successfully!");
+    log(tag, `Final URL: ${page.url()}`);
+    return true;
+  } else {
+    log(tag, "⚠️ No clear order confirmation found, but order may have been placed.");
+    log(tag, `Final URL: ${page.url()}`);
+    
+    // Take a screenshot for manual verification
+    try {
+      await page.screenshot({ path: 'order-result.png', fullPage: false });
+      log(tag, "Screenshot saved as 'order-result.png' for verification.");
+    } catch (e) {
+      log(tag, `Could not save screenshot: ${e.message}`);
+    }
+    
+    return true; // Assume success if we got this far without errors
+  }
+} else {
+  log(tag, "❌ Place Order button never became enabled.");
+  log(tag, `Final URL: ${page.url()}`);
+  
+  // Debug info
+  await page.evaluate(() => {
+    console.log('All buttons on page:', 
+      Array.from(document.querySelectorAll('button'))
+        .map(b => ({ text: b.innerText?.substring(0, 50), disabled: b.disabled, testId: b.getAttribute('data-test') }))
+    );
+  });
+  
+  return false;
+}
+   
+   
 
     log(tag, "⚠️  Could not place order.");
     log(tag, `Current URL: ${page.url()}`);
@@ -1014,11 +1190,11 @@ async function runScraper(config, onBrowserReady) {
         '--no-sandbox',
         '--disable-infobars',
         '--disable-blink-features=AutomationControlled',
-        '--start-minimized',
-        '--window-position=9999,9999',
-        '--window-size=800,600',
-       '--suppress-message-center-popups',
-        '--disable-notifications',
+    //    '--start-minimized',
+      //  '--window-position=9999,9999',
+     //   '--window-size=800,600',
+    //   '--suppress-message-center-popups',
+     //   '--disable-notifications',
       ],
       ignoreDefaultArgs: ['--enable-automation'],
     };
